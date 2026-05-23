@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Secrets — must never be committed
+secrets/
+*.token
+*.key
+*.pem
+
+# Local test artefacts
+*.cap.local
+*.local.json
+
+# Coverage
+.coverage
+htmlcov/
+coverage.xml

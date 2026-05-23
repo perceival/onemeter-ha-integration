@@ -1,0 +1,80 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Select OneMeter device",
+        "data": {
+          "address": "Device"
+        }
+      },
+      "manual": {
+        "title": "Add OneMeter by address",
+        "description": "No OneMeter device was discovered by your Bluetooth proxies. Enter the BLE MAC address manually (format: AA:BB:CC:DD:EE:FF).",
+        "data": {
+          "address": "BLE MAC address"
+        }
+      },
+      "credentials": {
+        "title": "OneMeter credentials",
+        "description": "Enter the AES key (mobKey) and IV for device {name} ({address}). These 16-byte values are stored in the device's flash and must be extracted via SWD. See the project README for instructions.\n\nChoose the meter protocol the device should use to read your meter. If you don't know yet, leave it as 'Leave unchanged' — you can set it later from the device's Configure page. Selecting a non-default value writes to the device's flash.",
+        "data": {
+          "key": "AES key (32 hex chars)",
+          "iv": "IV (32 hex chars)",
+          "meter_protocol": "Meter protocol"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-enter OneMeter credentials",
+        "description": "The current credentials for {name} ({address}) are no longer accepted. Re-enter the AES key and IV.",
+        "data": {
+          "key": "AES key (32 hex chars)",
+          "iv": "IV (32 hex chars)"
+        }
+      }
+    },
+    "error": {
+      "invalid_hex": "Must be 32 hexadecimal characters (16 bytes).",
+      "invalid_mac": "Not a valid BLE MAC address (expected AA:BB:CC:DD:EE:FF)."
+    },
+    "abort": {
+      "already_configured": "This OneMeter is already configured.",
+      "not_supported": "Device does not look like a OneMeter (name does not start with 'OM ').",
+      "no_devices_found": "No OneMeter devices were found by your Bluetooth proxies. Ensure a proxy is in range and the device is advertising."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "OneMeter — options",
+        "description": "Each poll wakes the BLE radio, logs in, reads the device, and disconnects. The default 1 hour cadence gives roughly 12 months on the CR2032 battery. Shorter intervals significantly shorten battery life. Allowed range: {min_s}–{max_s} seconds. Press the \"Poll now\" button to refresh between scheduled polls.\n\nChanging the meter protocol writes to the device's flash on the next poll. 'Leave unchanged' is the safe default — the integration won't touch the device's protocol setting.",
+        "data": {
+          "poll_interval": "Poll interval (seconds)",
+          "meter_protocol": "Meter protocol"
+        }
+      }
+    },
+    "error": {
+      "interval_out_of_range": "Interval must be within the allowed range."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "battery_voltage": {"name": "Battery voltage"},
+      "serial":          {"name": "Serial number"},
+      "mac":             {"name": "BLE MAC"},
+      "last_seen":       {"name": "Last seen"},
+      "rx_frames":       {"name": "RX frames"},
+      "rx_errors":       {"name": "RX errors"},
+      "rx_rejections":   {"name": "RX cipher rejections"},
+      "conn_state":      {"name": "Connection state"},
+      "meter_reads_succeeded": {"name": "Meter reads succeeded"},
+      "meter_reads_failed":    {"name": "Meter reads failed"},
+      "meter_day_cycles":      {"name": "Meter day cycles completed"},
+      "last_protocol_set":     {"name": "Last protocol set"}
+    },
+    "button": {
+      "poll_now":          {"name": "Poll now"},
+      "auto_detect_meter": {"name": "Auto-detect meter"}
+    }
+  }
+}
