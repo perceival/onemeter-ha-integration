@@ -128,33 +128,33 @@ manufacturer's cloud during the device's initial registration with the
 OneMeter mobile app. They aren't available anywhere outside the
 device itself, so you have to read them out over SWD.
 
-A proper guide and helper utility will be published later. The
-high-level shape of the procedure:
+A helper script is provided at
+[`tools/extract_credentials.py`](tools/extract_credentials.py).
+See [`tools/EXTRACTING_CREDENTIALS.md`](tools/EXTRACTING_CREDENTIALS.md)
+for the full step-by-step procedure, including how to wire up SWD,
+how to run OpenOCD, and how to recover if the defaults don't match
+your firmware revision.
 
-1. **Open the device** to expose the nRF51822 SWD pads (SWDIO, SWCLK,
-   GND, plus VDD if your programmer doesn't power-supply the target).
-2. **Wire up a SWD programmer** (J-Link, ST-Link with `openocd`, Black
-   Magic Probe, etc.).
-3. **Bypass the chip's readback protection.** The nRF51 ships with its
-   APPROTECT / CLENR0 flash readback protection enabled. Clearing it
-   on this chip family means erasing the UICR's protection word, which
-   requires a known glitch / debug sequence rather than a normal SWD
-   read. Several public write-ups exist for the nRF51 family — look
-   for "nRF51 APPROTECT bypass" / "CLENR0 unlock".
-4. **Dump the application flash** (256 KB starting at `0x00000000`)
-   with OpenOCD or `nrfjprog`.
-5. **Locate the key + IV in the dump.** They live as a contiguous
-   32-byte block in the device-config region of flash. The same block
-   also contains the BLE MAC the device advertises with, so searching
-   the dump for your device's advertised MAC (printed on the OM label
-   or visible in any BLE scanner) is a reliable anchor — the AES key
-   and IV are right next to it.
-6. **Enter the two 16-byte values** (as hex) into the integration's
-   config flow.
+> **⚠️ Untested:** the script has been derived from analysis of one
+> specific device's firmware but **has not yet been run end-to-end
+> against a live device.** If you try it, please file an issue with
+> your results — both successes and failures are useful data.
 
-Opening the device, soldering to debug pads, and running a glitch
-unlock are non-trivial. If you've never done embedded work before, find
-someone who has, or wait for the helper utility.
+In short, the procedure is:
+
+1. Open the device to expose the nRF51822's SWD pads.
+2. Wire a SWD programmer (CMSIS-DAP, ST-Link, J-Link, Black Magic
+   Probe — anything OpenOCD supports).
+3. Start OpenOCD with an appropriate `target/nrf51.cfg`.
+4. Run `python tools/extract_credentials.py`. The script halts the
+   CPU, reads the BLE MAC + mobKey + IV using a CRP-bypass gadget,
+   resumes the CPU, and prints the values.
+5. Paste the BLE MAC, mobKey, and IV into the integration's config
+   flow.
+
+Opening the device, soldering to debug pads, and using a SWD
+programmer are non-trivial. If you've never done embedded work
+before, find a friend who has.
 
 ## Known limitations
 
