@@ -191,6 +191,11 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
         self._add_register_entity_cb = None
         self._pending_ack: asyncio.Event = asyncio.Event()
         self._last_ack_cmd: int | None = None
+        # Set by _on_disconnect; awaited by _safe_disconnect to confirm
+        # the proxy actually closed the link (not just that our local
+        # client.disconnect() call returned). If this never fires after
+        # we ask to disconnect, the proxy's slot is stuck-allocated.
+        self._disconnected_event: asyncio.Event = asyncio.Event()
         self.data = OneMeterData(state=self._state.value)
 
     # --- Public lifecycle ----------------------------------------------------
@@ -322,6 +327,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
         if ble_device is None:
             raise BleakError(f"OneMeter {self.address} not currently in range of any proxy")
 
+        self._disconnected_event.clear()
         client = await establish_connection(
             BleakClient,
             ble_device,
@@ -330,10 +336,11 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
             max_attempts=2,
         )
         self._client = client
-        try:
-            await self._login_and_loop(client)
-        finally:
-            self._client = None
+        # NOTE: do not clear self._client here. _run()'s finally block
+        # calls _safe_disconnect() which needs self._client to actually
+        # tear down the BLE link. _safe_disconnect is the single owner
+        # of clearing self._client.
+        await self._login_and_loop(client)
 
     async def _login_and_loop(self, client: BleakClient) -> None:
         # Settle window after BLE link-up before talking GATT. The device
@@ -705,17 +712,56 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
         """Called by bleak when the BLE link drops."""
         _LOGGER.debug("OneMeter %s: BLE disconnected", self.address)
         self._set_state(ConnState.DISCONNECTED)
+        self._disconnected_event.set()
 
     # --- Helpers -------------------------------------------------------------
 
     async def _safe_disconnect(self) -> None:
+        """Disconnect and verify the proxy actually closed the link.
+
+        `await client.disconnect()` can return cleanly even when the
+        disconnect command was lost in flight (we saw this with a WiFi
+        roam coinciding with the disconnect — the API socket ACK'd at
+        TCP level but the proxy never received the command). To detect
+        that case, we wait for the disconnected_callback to fire, which
+        only happens when the proxy reports the link is actually closed.
+        If that doesn't happen, the proxy's slot is stuck-allocated and
+        no further sessions will succeed until the proxy restarts.
+        """
         if self._client is None:
             return
-        try:
-            await self._client.disconnect()
-        except Exception:  # noqa: BLE001
-            pass
+        client = self._client
         self._client = None
+        t0 = time.monotonic()
+        try:
+            await asyncio.wait_for(client.disconnect(), timeout=5.0)
+        except asyncio.TimeoutError:
+            _LOGGER.warning(
+                "OneMeter %s: BLE disconnect call timed out after %.1fs",
+                self.address, time.monotonic() - t0,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning(
+                "OneMeter %s: BLE disconnect call failed after %.1fs: %s",
+                self.address, time.monotonic() - t0, exc,
+            )
+            return
+
+        try:
+            await asyncio.wait_for(self._disconnected_event.wait(), timeout=3.0)
+        except asyncio.TimeoutError:
+            _LOGGER.warning(
+                "OneMeter %s: disconnect callback didn't fire within 3.0s "
+                "(call returned in %.2fs). The proxy may be holding a phantom "
+                "connection — a proxy restart will be needed to recover.",
+                self.address, time.monotonic() - t0,
+            )
+            return
+        _LOGGER.debug(
+            "OneMeter %s: BLE disconnect confirmed in %.2fs",
+            self.address, time.monotonic() - t0,
+        )
 
     # --- Stuck-device notification --------------------------------------
 
