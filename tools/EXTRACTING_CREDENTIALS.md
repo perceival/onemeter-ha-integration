@@ -119,6 +119,25 @@ openocd -f interface/stlink.cfg \
         -f target/nrf51.cfg
 ```
 
+```sh
+# FTDI FT232H breakout (MPSSE, native SWD via OpenOCD's ftdi driver).
+# Wiring: AD0 -> SWDCLK, AD1 -> 470 Ω..2.2 kΩ -> SWDIO, AD2 -> SWDIO (direct), GND -> GND.
+# The series resistor does not have to be 470 Ω: nRF51's SWDIO has an internal
+# ~13 kΩ pull-up, so anything up to ~2.2 kΩ still gives a valid low level.
+openocd -f interface/ftdi/ft232h-module-swd.cfg \
+        -c "reset_config none" \
+        -f target/nordic/nrf51.cfg \
+        -c "adapter speed 100"
+```
+
+Two notes that cost me time:
+
+- On recent OpenOCD packages (e.g. 0.12 on Fedora) the target file lives
+  at `target/nordic/nrf51.cfg`, not `target/nrf51.cfg`.
+- `target/nrf51.cfg` sets its own `adapter speed 1000`. If you pass a
+  lower speed *before* the target file, it gets overridden; put
+  `-c "adapter speed ..."` *after* `-f target/...`.
+
 OpenOCD should print something like `Target voltage: 3.0 V` and
 `nrf51.cpu: hardware has 4 breakpoints, 2 watchpoints`. Leave that
 running. It listens on telnet port `4444` by default.
@@ -161,8 +180,19 @@ These bytes are sensitive — treat them like a password.
 
 Cross-check the BLE MAC against the sticker on the device (or against
 what your phone's BLE scanner shows). If they match, the read is
-trustworthy. If they don't, fix that mismatch before touching the
-mobKey/IV values.
+trustworthy.
+
+If they don't match, that is **not necessarily** a wiring problem: at
+least one firmware revision advertises with an address stored in its own
+config block, not the FICR one. On that device the FICR address printed
+by the script had nothing in common with the sticker, yet a BLE scan from
+the host (`bluetoothctl --timeout 15 scan on; bluetoothctl devices | grep "OM "`)
+showed the device advertising as `OM xxxx` with exactly the sticker
+address, and the mobKey/IV read from the default offsets were internally
+consistent (two agreeing reads per word, high-entropy bytes, config-block
+layout matching the analysed firmware). In that case use the sticker /
+advertised address in the config flow and treat the FICR value only as a
+"SWD wiring is alive" check.
 
 ### 4. Plug the values into the integration
 
