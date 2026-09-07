@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import UnitOfEnergy, UnitOfPower
 
 
 @dataclass(frozen=True)
@@ -83,8 +83,20 @@ _ENERGY_TARIFF_3 = ObisDescriptor(
     entity_registry_enabled_default=False,
 )
 
-# `0.15.7.0` is the instantaneous-power register in standard OBIS, but
-# its scale isn't pinned down yet — surfaced only in diagnostics for now.
+# `0.15.7.0` is the instantaneous absolute active power (|+P|+|-P|),
+# sampled by the device at each meter readout (every quarter hour on the
+# reference meter), so it is a snapshot, not a live reading. Scale 0.01 kW
+# assumed by analogy with the 0.01 kWh energy registers (a raw 52 → 0.52 kW
+# matched an evening household base load); verify against the meter display.
+_POWER_TOTAL = ObisDescriptor(
+    obis=bytes([0, 15, 7, 0]),
+    key="power_total",
+    name="Power (at last meter read)",
+    unit=UnitOfPower.KILO_WATT,
+    scale=0.01,
+    device_class=SensorDeviceClass.POWER,
+    state_class=SensorStateClass.MEASUREMENT,
+)
 
 # `0xff` is the vendor-specific OBIS A-field. `255.1.1.4` carries the
 # device's "last successful meter read" timestamp as a unix u32.
@@ -105,6 +117,7 @@ KNOWN_OBIS: dict[bytes, ObisDescriptor] = {
         _ENERGY_TARIFF_1,
         _ENERGY_TARIFF_2,
         _ENERGY_TARIFF_3,
+        _POWER_TOTAL,
         _LAST_READ_TS,
     )
 }
