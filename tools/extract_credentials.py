@@ -145,7 +145,11 @@ def read_word_via_gadget(
     _tncmd(sock, f"reg {gadget_reg} 0x{addr:x}")
     _tncmd(sock, "step")
     resp = _tncmd(sock, f"reg {gadget_reg}")
-    matches = _HEX_RE.findall(resp)
+    # OpenOCD may interleave unrelated lines (e.g. "SWD DPIDR 0x...") after a
+    # reset; only accept the value from the "<reg> (/32): 0x..." line itself.
+    matches = re.findall(
+        rf"{re.escape(gadget_reg)}\s*\(/32\):\s*(0x[0-9a-fA-F]+)", resp
+    )
     if len(matches) != 1:
         raise OpenOCDError(
             f"expected one hex value reading {gadget_reg}, got {matches} from {resp!r}"
