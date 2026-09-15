@@ -97,6 +97,18 @@ def test_parse_auto_detect_too_short():
     assert decode.parse_auto_detect(b"\x00\x01\x02") is None
 
 
+def test_parse_device_time_basic():
+    payload = bytes([0x44, 0x33, 0x22, 0x11]) + b"\x00" * 9
+    r = decode.parse_device_time(payload)
+    assert r is not None
+    assert r.clock == 0x11223344
+    assert r.raw == bytes([0x44, 0x33, 0x22, 0x11])
+
+
+def test_parse_device_time_too_short():
+    assert decode.parse_device_time(b"\x00\x01\x02") is None
+
+
 def test_parse_block_header_basic():
     import struct
     payload = bytes([0x01]) + struct.pack("<I", 0x6a10da42) + b"\x00" * 7

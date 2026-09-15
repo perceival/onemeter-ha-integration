@@ -10,6 +10,7 @@ from onemeter.protocol.crc import crc16_ccitt_false
 from onemeter.protocol.framing import build_plain_frame
 from onemeter.protocol.session import (
     BatteryReading,
+    DeviceTime,
     FrameErrorEvent,
     OneMeterSession,
     RejectionEvent,
@@ -83,6 +84,16 @@ def test_session_round_trip_battery_response(test_key, test_iv):
     event = s.feed_rx(ct)
     assert isinstance(event, BatteryReading)
     assert event.volts == pytest.approx(3.29, abs=0.01)
+
+
+def test_session_round_trip_device_time_response(test_key, test_iv):
+    """Synthesise a device-time (0x1D) response and check it decodes to DeviceTime."""
+    s = OneMeterSession(test_key, test_iv)
+    cipher = OneMeterCipher(test_key, test_iv)
+    ct = _encrypt_direct_response(cipher, commands.CMD_DEVICE_TIME, struct.pack("<I", 0x11223344))
+    event = s.feed_rx(ct)
+    assert isinstance(event, DeviceTime)
+    assert event.clock == 0x11223344
 
 
 def test_session_login_ack_is_unknown_response(test_key, test_iv):

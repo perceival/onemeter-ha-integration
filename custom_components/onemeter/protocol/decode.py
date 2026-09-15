@@ -254,3 +254,27 @@ def parse_data_record(payload: bytes) -> DataRecord | None:
         raw_value=raw_value,
         raw=bytes(payload[:12]),
     )
+
+
+@dataclass(frozen=True)
+class DeviceTime:
+    """Decoded cmd 0x1D (device clock) response.
+
+    ``clock`` is the device's own unix-epoch clock, verified against wall
+    time (matched real elapsed seconds between a TIME_SYNC and this probe
+    in testing). The second 4-byte field of the raw payload isn't
+    exposed here: on hardware with nothing attached to the optical port
+    it varies non-monotonically between reads, which looks like raw/noisy
+    ADC data from the unconnected sensor rather than a meaningful counter.
+    """
+
+    clock: int
+    raw: bytes
+
+
+def parse_device_time(payload: bytes) -> DeviceTime | None:
+    """Decode cmd 0x1D payload."""
+    if len(payload) < 4:
+        return None
+    clock = struct.unpack_from("<I", payload, 0)[0]
+    return DeviceTime(clock=clock, raw=bytes(payload[:4]))

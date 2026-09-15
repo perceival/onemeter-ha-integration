@@ -13,7 +13,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, UnitOfElectricPotential
+from homeassistant.const import EntityCategory, UnitOfElectricPotential, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -95,6 +95,15 @@ SENSORS: tuple[OneMeterSensorDescription, ...] = (
         name="Connection state",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda d: d.state,
+    ),
+    OneMeterSensorDescription(
+        key="device_clock_drift",
+        translation_key="device_clock_drift",
+        name="Device clock drift",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: d.device_clock_drift_s,
     ),
     # --- Meter communication statistics (cmd 0x36) ---
     OneMeterSensorDescription(

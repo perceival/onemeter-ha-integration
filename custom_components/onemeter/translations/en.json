@@ -67,6 +67,7 @@
       "rx_errors":       {"name": "RX errors"},
       "rx_rejections":   {"name": "RX cipher rejections"},
       "conn_state":      {"name": "Connection state"},
+      "device_clock_drift": {"name": "Device clock drift"},
       "meter_reads_succeeded": {"name": "Meter reads succeeded"},
       "meter_reads_failed":    {"name": "Meter reads failed"},
       "meter_day_cycles":      {"name": "Meter day cycles completed"},

@@ -77,4 +77,4 @@ ADV_MFR_ID = 0xFFFF
 
 # Marker for the read probes we run once per session (after login) to
 # populate identity / fs-params / etc.
-ONE_SHOT_PROBES = (0x87, 0x36, 0x82, 0x21)  # CMD_IDENTITY, CMD_COMM_STATS, CMD_FS_PARAMS, CMD_LAST_OBIS
+ONE_SHOT_PROBES = (0x87, 0x36, 0x82, 0x21, 0x1D)  # CMD_IDENTITY, CMD_COMM_STATS, CMD_FS_PARAMS, CMD_LAST_OBIS, CMD_DEVICE_TIME
