@@ -45,8 +45,53 @@ your meter's registers" section below.
 | `button.<name>_poll_now` | Triggers an immediate session — refresh all sensors right now, including a brief listen for live meter pushes. |
 | `button.<name>_auto_detect_meter` | Asks the device to probe the optical port (`cmd 0x19`). Disabled until the device has reported successful meter reads at least once. |
 
-Plus, **once a meter is attached and pushes data**, the integration
-auto-creates per-register sensors as it discovers them:
+Plus, **once a meter is attached and has accumulated a cached reading**
+(cmd 0x21 — polled every session), a fixed set of standard-OBIS sensors
+work out of the box, no per-meter correlation needed:
+
+| Entity | OBIS | What it shows |
+|---|---|---|
+| `sensor.<name>_energy_total` | `0.15.8.0` | Total active energy across all tariffs, kWh |
+| `sensor.<name>_energy_tariff_1` | `0.15.8.1` | Energy on tariff 1, kWh |
+| `sensor.<name>_energy_tariff_2` | `0.15.8.2` | Energy on tariff 2, kWh (disabled by default) |
+| `sensor.<name>_energy_tariff_3` | `0.15.8.3` | Energy on tariff 3, kWh (disabled by default) |
+| `sensor.<name>_energy_import_total` | `0.1.8.0` | Active energy imported from the grid (consumption), kWh |
+| `sensor.<name>_energy_export_total` | `0.2.8.0` | Active energy exported to the grid (e.g. solar feed-in), kWh (disabled by default) |
+| `sensor.<name>_last_meter_read` | `255.1.1.4` | Timestamp of the device's last successful meter read |
+
+**Consumption vs. production:** `energy_total` (`0.15.8.0`) is a *sum*
+register — for a plain meter with no local generation it's effectively
+your consumption, but if you have solar/net-metering it nets import
+and export together, which is the wrong input for Home Assistant's
+Energy dashboard. Use `energy_import_total` (`0.1.8.0`) as the "Grid
+consumption" source and `energy_export_total` (`0.2.8.0`) as the "Return
+to grid" source instead.
+
+`energy_export_total` is disabled by default, controlled by a
+**"I'm a prosumer"** checkbox on the setup screen. Most installs have
+no local generation, in which case the export register just holds a
+static, near-zero calibration artifact — not real production data —
+so it stays hidden unless you explicitly say otherwise. You can also
+flip this later from the device's Configure page, but Home Assistant
+only applies a changed default to sensors it hasn't created yet — if
+`energy_export_total` already exists and is disabled, enabling
+prosumer mode afterward won't un-hide it on its own; enable it once
+manually under *Settings → Devices & Services → Entities*.
+
+These read as `unavailable` until a real reading has been cached (a
+device with no meter attached returns the `0xFFFFFFFF` sentinel for
+every entry). The scale factor (0.01, i.e. each register unit is
+10 Wh) and the `energy_total`/`energy_import_total`/`energy_export_total`/
+`last_meter_read` codes are confirmed against a real Apator NORAX 3 —
+see `CHANGELOG.md`. Other meter
+families may use different or additional OBIS codes; unrecognized
+ones are logged (`OneMeter ...: cached OBIS entry ...`) but don't get
+an entity. `tools/dump_last_obis.py` dumps the raw entries directly
+over BLE if you want to see what your meter reports before extending
+`obis_map.py`.
+
+Separately, **once a meter is attached and pushes live data**, the
+integration auto-creates per-register sensors as it discovers them:
 
 | Entity | What it shows |
 |---|---|
@@ -55,7 +100,11 @@ auto-creates per-register sensors as it discovers them:
 
 The mapping from `<N>` (the device's `dataType`) to standard OBIS codes
 is meter-dependent — see [Discovering your meter's
-registers](#discovering-your-meters-registers) below.
+registers](#discovering-your-meters-registers) below. This is a
+different mechanism from the cached-OBIS sensors above: those use
+standard OBIS codes shipped in `obis_map.py`, while these use the
+device's own internal per-model register numbering and need manual
+correlation.
 
 ## Requirements
 

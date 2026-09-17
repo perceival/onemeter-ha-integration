@@ -30,6 +30,12 @@ class ObisDescriptor:
     device_class: SensorDeviceClass | None
     state_class: SensorStateClass | None
     entity_registry_enabled_default: bool = True
+    # True for descriptors that should only be enabled by default for
+    # "prosumer" installs (local generation, e.g. solar) — see
+    # config_flow.py's CONF_PROSUMER. sensor.py uses this to override
+    # entity_registry_enabled_default per config entry instead of the
+    # static default above.
+    requires_prosumer: bool = False
 
     def format_obis(self) -> str:
         b = self.obis
@@ -83,6 +89,43 @@ _ENERGY_TARIFF_3 = ObisDescriptor(
     entity_registry_enabled_default=False,
 )
 
+# `1.8.0`/`2.8.0` are the standard OBIS active-energy import/export
+# registers — distinct from the `15.8.X` "sum" family above. For a
+# meter with no local generation these are redundant with `energy_total`
+# (import ≈ sum, export ≈ 0), but for a net-metering/solar setup `15.8.0`
+# nets import+export together, which is the *wrong* input for HA's
+# Energy dashboard ("Grid consumption" wants import only, "Return to
+# grid" wants export only) — these two registers are the correct ones
+# to use there. Confirmed present (non-zero, real) on an Apator NORAX 3
+# even without solar: `1.8.0=4010882`, `2.8.0=114` (a small non-zero
+# export reading with no PV attached is a normal meter-calibration
+# artifact, not evidence of generation).
+_ENERGY_IMPORT_TOTAL = ObisDescriptor(
+    obis=bytes([0, 1, 8, 0]),
+    key="energy_import_total",
+    name="Energy import total",
+    unit=UnitOfEnergy.KILO_WATT_HOUR,
+    scale=0.01,
+    device_class=SensorDeviceClass.ENERGY,
+    state_class=SensorStateClass.TOTAL_INCREASING,
+)
+
+_ENERGY_EXPORT_TOTAL = ObisDescriptor(
+    obis=bytes([0, 2, 8, 0]),
+    key="energy_export_total",
+    name="Energy export total",
+    unit=UnitOfEnergy.KILO_WATT_HOUR,
+    scale=0.01,
+    device_class=SensorDeviceClass.ENERGY,
+    state_class=SensorStateClass.TOTAL_INCREASING,
+    # Disabled by default — most installs have no local generation, so
+    # this sensor would just sit at a stale near-zero calibration value,
+    # not real production data. sensor.py enables it instead when the
+    # user has declared themselves a "prosumer" (config option).
+    entity_registry_enabled_default=False,
+    requires_prosumer=True,
+)
+
 # `0.15.7.0` is the instantaneous-power register in standard OBIS, but
 # its scale isn't pinned down yet — surfaced only in diagnostics for now.
 
@@ -105,6 +148,8 @@ KNOWN_OBIS: dict[bytes, ObisDescriptor] = {
         _ENERGY_TARIFF_1,
         _ENERGY_TARIFF_2,
         _ENERGY_TARIFF_3,
+        _ENERGY_IMPORT_TOTAL,
+        _ENERGY_EXPORT_TOTAL,
         _LAST_READ_TS,
     )
 }

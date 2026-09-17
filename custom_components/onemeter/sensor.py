@@ -13,13 +13,13 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, UnitOfElectricPotential
+from homeassistant.const import EntityCategory, UnitOfElectricPotential, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import CONF_PROSUMER, DOMAIN
 from .coordinator import OneMeterCoordinator, OneMeterData
 from .obis_map import KNOWN_OBIS, ObisDescriptor, scaled_value
 from .protocol.decode import SENTINEL_NO_VALUE
@@ -96,6 +96,15 @@ SENSORS: tuple[OneMeterSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda d: d.state,
     ),
+    OneMeterSensorDescription(
+        key="device_clock_drift",
+        translation_key="device_clock_drift",
+        name="Device clock drift",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: d.device_clock_drift_s,
+    ),
     # --- Meter communication statistics (cmd 0x36) ---
     OneMeterSensorDescription(
         key="meter_reads_succeeded",
@@ -148,8 +157,9 @@ async def async_setup_entry(
     # Static OBIS-mapped sensors — one per known code. Always created
     # (even if the current cached_obis_by_code doesn't have a value
     # yet); their `available` reflects whether a value is present.
+    is_prosumer = bool(entry.options.get(CONF_PROSUMER, False))
     async_add_entities(
-        OneMeterObisSensor(coordinator, descriptor)
+        OneMeterObisSensor(coordinator, descriptor, is_prosumer=is_prosumer)
         for descriptor in KNOWN_OBIS.values()
     )
 
@@ -219,6 +229,7 @@ class OneMeterObisSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity):
         self,
         coordinator: OneMeterCoordinator,
         descriptor: ObisDescriptor,
+        is_prosumer: bool = False,
     ) -> None:
         super().__init__(coordinator)
         self._descriptor = descriptor
@@ -227,8 +238,12 @@ class OneMeterObisSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity):
         self._attr_native_unit_of_measurement = descriptor.unit
         self._attr_device_class = descriptor.device_class
         self._attr_state_class = descriptor.state_class
+        # Prosumer-gated descriptors (e.g. energy_export_total) follow
+        # the user's declared prosumer status instead of the static
+        # default — see obis_map.ObisDescriptor.requires_prosumer.
         self._attr_entity_registry_enabled_default = (
-            descriptor.entity_registry_enabled_default
+            is_prosumer if descriptor.requires_prosumer
+            else descriptor.entity_registry_enabled_default
         )
         self._attr_device_info = _device_info(coordinator)
 

@@ -16,11 +16,12 @@
       },
       "credentials": {
         "title": "OneMeter credentials",
-        "description": "Enter the AES key (mobKey) and IV for device {name} ({address}). These 16-byte values are stored in the device's flash and must be extracted via SWD. See the project README for instructions.\n\nChoose the meter protocol the device should use to read your meter. If you don't know yet, leave it as 'Leave unchanged' — you can set it later from the device's Configure page. Selecting a non-default value writes to the device's flash.",
+        "description": "Enter the AES key (mobKey) and IV for device {name} ({address}). These 16-byte values are stored in the device's flash and must be extracted via SWD. See the project README for instructions.\n\nChoose the meter protocol the device should use to read your meter. If you don't know yet, leave it as 'Leave unchanged' — you can set it later from the device's Configure page. Selecting a non-default value writes to the device's flash.\n\nAre you a prosumer (you also feed energy back to the grid, e.g. solar)? This only affects which sensors are enabled by default and can be changed later from the device's Configure page.",
         "data": {
           "key": "AES key (32 hex chars)",
           "iv": "IV (32 hex chars)",
-          "meter_protocol": "Meter protocol"
+          "meter_protocol": "Meter protocol",
+          "is_prosumer": "I'm a prosumer (I also produce energy)"
         }
       },
       "reauth_confirm": {
@@ -46,10 +47,11 @@
     "step": {
       "init": {
         "title": "OneMeter — options",
-        "description": "Each poll wakes the BLE radio, logs in, reads the device, and disconnects. The default 1 hour cadence gives roughly 12 months on the CR2032 battery. Shorter intervals significantly shorten battery life. Allowed range: {min_s}–{max_s} seconds. Press the \"Poll now\" button to refresh between scheduled polls.\n\nChanging the meter protocol writes to the device's flash on the next poll. 'Leave unchanged' is the safe default — the integration won't touch the device's protocol setting.",
+        "description": "Each poll wakes the BLE radio, logs in, reads the device, and disconnects. The default 1 hour cadence gives roughly 12 months on the CR2032 battery. Shorter intervals significantly shorten battery life. Allowed range: {min_s}–{max_s} seconds. Press the \"Poll now\" button to refresh between scheduled polls.\n\nChanging the meter protocol writes to the device's flash on the next poll. 'Leave unchanged' is the safe default — the integration won't touch the device's protocol setting.\n\nAre you a prosumer (you also feed energy back to the grid, e.g. solar)? Enables the Energy export total sensor by default for new installs. Most installs should leave this unchecked. If that sensor was already created and disabled, checking this box now won't un-hide it automatically — enable it once under Settings → Devices & Services → Entities.",
         "data": {
           "poll_interval": "Poll interval (seconds)",
-          "meter_protocol": "Meter protocol"
+          "meter_protocol": "Meter protocol",
+          "is_prosumer": "I'm a prosumer (I also produce energy)"
         }
       }
     },
@@ -67,6 +69,7 @@
       "rx_errors":       {"name": "RX errors"},
       "rx_rejections":   {"name": "RX cipher rejections"},
       "conn_state":      {"name": "Connection state"},
+      "device_clock_drift": {"name": "Device clock drift"},
       "meter_reads_succeeded": {"name": "Meter reads succeeded"},
       "meter_reads_failed":    {"name": "Meter reads failed"},
       "meter_day_cycles":      {"name": "Meter day cycles completed"},
