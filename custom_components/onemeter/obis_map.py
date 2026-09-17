@@ -30,6 +30,12 @@ class ObisDescriptor:
     device_class: SensorDeviceClass | None
     state_class: SensorStateClass | None
     entity_registry_enabled_default: bool = True
+    # True for descriptors that should only be enabled by default for
+    # "prosumer" installs (local generation, e.g. solar) — see
+    # config_flow.py's CONF_PROSUMER. sensor.py uses this to override
+    # entity_registry_enabled_default per config entry instead of the
+    # static default above.
+    requires_prosumer: bool = False
 
     def format_obis(self) -> str:
         b = self.obis
@@ -113,9 +119,11 @@ _ENERGY_EXPORT_TOTAL = ObisDescriptor(
     device_class=SensorDeviceClass.ENERGY,
     state_class=SensorStateClass.TOTAL_INCREASING,
     # Disabled by default — most installs have no local generation, so
-    # this sensor would just sit at (near-)zero. Same rationale as the
-    # per-tariff sensors above.
+    # this sensor would just sit at a stale near-zero calibration value,
+    # not real production data. sensor.py enables it instead when the
+    # user has declared themselves a "prosumer" (config option).
     entity_registry_enabled_default=False,
+    requires_prosumer=True,
 )
 
 # `0.15.7.0` is the instantaneous-power register in standard OBIS, but
