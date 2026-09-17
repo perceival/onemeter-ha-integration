@@ -64,9 +64,15 @@ register — for a plain meter with no local generation it's effectively
 your consumption, but if you have solar/net-metering it nets import
 and export together, which is the wrong input for Home Assistant's
 Energy dashboard. Use `energy_import_total` (`1.8.0`) as the "Grid
-consumption" source and `energy_export_total` (`2.8.0`, disabled by
-default — enable it if you actually have local generation) as the
-"Return to grid" source instead.
+consumption" source and `energy_export_total` (`2.8.0`) as the "Return
+to grid" source instead.
+
+`energy_export_total` is disabled by default, controlled by a
+**"I'm a prosumer"** checkbox on the setup screen (also changeable
+later from the device's Configure page). Most installs have no local
+generation, in which case the export register just holds a static,
+near-zero calibration artifact — not real production data — so it
+stays hidden unless you explicitly say otherwise.
 
 These read as `unavailable` until a real reading has been cached (a
 device with no meter attached returns the `0xFFFFFFFF` sentinel for

@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Energy dashboard once local generation is involved (it nets import
   and export together instead of reporting them separately). These
   are the correct sources for "Grid consumption" / "Return to grid."
+- **"I'm a prosumer" option** (setup screen + options flow,
+  `CONF_PROSUMER`) — controls whether `energy_export_total` is enabled
+  by default. Off by default: on a plain consumer-only meter, the
+  export register just holds a static near-zero calibration artifact,
+  not real production data, so it stays hidden unless the user
+  explicitly declares they have local generation.
 
 ### Validated
 

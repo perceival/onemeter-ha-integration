@@ -26,6 +26,13 @@ CONF_ADDRESS = "address"
 # without changing the interval.
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_METER_PROTOCOL = "meter_protocol"
+# "Prosumer" (producer+consumer) — Polish energy-market term for a
+# household that also feeds energy back to the grid (e.g. solar).
+# Controls whether the energy_export_total sensor (OBIS 2.8.0) is
+# enabled by default: most installs are consumer-only, where the
+# export register just holds a static near-zero calibration artifact,
+# not real production data — see obis_map.py.
+CONF_PROSUMER = "is_prosumer"
 
 # Sentinel for "don't send cmd 0x14 to the device — leave its setting as is".
 # Stored as a string in the options because voluptuous-serialize doesn't
