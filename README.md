@@ -55,24 +55,28 @@ work out of the box, no per-meter correlation needed:
 | `sensor.<name>_energy_tariff_1` | `0.15.8.1` | Energy on tariff 1, kWh |
 | `sensor.<name>_energy_tariff_2` | `0.15.8.2` | Energy on tariff 2, kWh (disabled by default) |
 | `sensor.<name>_energy_tariff_3` | `0.15.8.3` | Energy on tariff 3, kWh (disabled by default) |
-| `sensor.<name>_energy_import_total` | `1.8.0` | Active energy imported from the grid (consumption), kWh |
-| `sensor.<name>_energy_export_total` | `2.8.0` | Active energy exported to the grid (e.g. solar feed-in), kWh (disabled by default) |
+| `sensor.<name>_energy_import_total` | `0.1.8.0` | Active energy imported from the grid (consumption), kWh |
+| `sensor.<name>_energy_export_total` | `0.2.8.0` | Active energy exported to the grid (e.g. solar feed-in), kWh (disabled by default) |
 | `sensor.<name>_last_meter_read` | `255.1.1.4` | Timestamp of the device's last successful meter read |
 
 **Consumption vs. production:** `energy_total` (`0.15.8.0`) is a *sum*
 register — for a plain meter with no local generation it's effectively
 your consumption, but if you have solar/net-metering it nets import
 and export together, which is the wrong input for Home Assistant's
-Energy dashboard. Use `energy_import_total` (`1.8.0`) as the "Grid
-consumption" source and `energy_export_total` (`2.8.0`) as the "Return
+Energy dashboard. Use `energy_import_total` (`0.1.8.0`) as the "Grid
+consumption" source and `energy_export_total` (`0.2.8.0`) as the "Return
 to grid" source instead.
 
 `energy_export_total` is disabled by default, controlled by a
-**"I'm a prosumer"** checkbox on the setup screen (also changeable
-later from the device's Configure page). Most installs have no local
-generation, in which case the export register just holds a static,
-near-zero calibration artifact — not real production data — so it
-stays hidden unless you explicitly say otherwise.
+**"I'm a prosumer"** checkbox on the setup screen. Most installs have
+no local generation, in which case the export register just holds a
+static, near-zero calibration artifact — not real production data —
+so it stays hidden unless you explicitly say otherwise. You can also
+flip this later from the device's Configure page, but Home Assistant
+only applies a changed default to sensors it hasn't created yet — if
+`energy_export_total` already exists and is disabled, enabling
+prosumer mode afterward won't un-hide it on its own; enable it once
+manually under *Settings → Devices & Services → Entities*.
 
 These read as `unavailable` until a real reading has been cached (a
 device with no meter attached returns the `0xFFFFFFFF` sentinel for

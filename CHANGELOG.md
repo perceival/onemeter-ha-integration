@@ -30,8 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (cached OBIS registers), independent of the HA coordinator. Also
   demonstrates the wait-for-reassembly-completion pattern manual
   scripts need but the coordinator gets for free.
-- `sensor.<name>_energy_import_total` (`1.8.0`) and
-  `sensor.<name>_energy_export_total` (`2.8.0`, disabled by default).
+- `sensor.<name>_energy_import_total` (`0.1.8.0`) and
+  `sensor.<name>_energy_export_total` (`0.2.8.0`, disabled by default).
   Previously only the combined `energy_total` (`0.15.8.0`, "sum
   active energy") sensor existed, which is the wrong input for HA's
   Energy dashboard once local generation is involved (it nets import
@@ -48,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `cmd 0x21` (cached OBIS registers) decoded and cross-checked against
   a real Apator NORAX 3 meter for the first time: `energy_total`
-  (`0.15.8.0`) matched the sum of import (`1.8.0`) and export (`2.8.0`)
+  (`0.15.8.0`) matched the sum of import (`0.1.8.0`) and export (`0.2.8.0`)
   registers within rounding, and `last_meter_read` (`255.1.1.4`)
   decoded to the correct current date. Confirms the `obis_map.py`
   scale factor (0.01) and the `energy_total`/`last_meter_read` sensors
