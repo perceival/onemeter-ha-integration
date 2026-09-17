@@ -55,13 +55,25 @@ work out of the box, no per-meter correlation needed:
 | `sensor.<name>_energy_tariff_1` | `0.15.8.1` | Energy on tariff 1, kWh |
 | `sensor.<name>_energy_tariff_2` | `0.15.8.2` | Energy on tariff 2, kWh (disabled by default) |
 | `sensor.<name>_energy_tariff_3` | `0.15.8.3` | Energy on tariff 3, kWh (disabled by default) |
+| `sensor.<name>_energy_import_total` | `1.8.0` | Active energy imported from the grid (consumption), kWh |
+| `sensor.<name>_energy_export_total` | `2.8.0` | Active energy exported to the grid (e.g. solar feed-in), kWh (disabled by default) |
 | `sensor.<name>_last_meter_read` | `255.1.1.4` | Timestamp of the device's last successful meter read |
+
+**Consumption vs. production:** `energy_total` (`0.15.8.0`) is a *sum*
+register — for a plain meter with no local generation it's effectively
+your consumption, but if you have solar/net-metering it nets import
+and export together, which is the wrong input for Home Assistant's
+Energy dashboard. Use `energy_import_total` (`1.8.0`) as the "Grid
+consumption" source and `energy_export_total` (`2.8.0`, disabled by
+default — enable it if you actually have local generation) as the
+"Return to grid" source instead.
 
 These read as `unavailable` until a real reading has been cached (a
 device with no meter attached returns the `0xFFFFFFFF` sentinel for
 every entry). The scale factor (0.01, i.e. each register unit is
-10 Wh) and the `energy_total`/`last_meter_read` codes are confirmed
-against a real Apator NORAX 3 — see `CHANGELOG.md`. Other meter
+10 Wh) and the `energy_total`/`energy_import_total`/`energy_export_total`/
+`last_meter_read` codes are confirmed against a real Apator NORAX 3 —
+see `CHANGELOG.md`. Other meter
 families may use different or additional OBIS codes; unrecognized
 ones are logged (`OneMeter ...: cached OBIS entry ...`) but don't get
 an entity. `tools/dump_last_obis.py` dumps the raw entries directly

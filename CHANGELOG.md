@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (cached OBIS registers), independent of the HA coordinator. Also
   demonstrates the wait-for-reassembly-completion pattern manual
   scripts need but the coordinator gets for free.
+- `sensor.<name>_energy_import_total` (`1.8.0`) and
+  `sensor.<name>_energy_export_total` (`2.8.0`, disabled by default).
+  Previously only the combined `energy_total` (`0.15.8.0`, "sum
+  active energy") sensor existed, which is the wrong input for HA's
+  Energy dashboard once local generation is involved (it nets import
+  and export together instead of reporting them separately). These
+  are the correct sources for "Grid consumption" / "Return to grid."
 
 ### Validated
 
