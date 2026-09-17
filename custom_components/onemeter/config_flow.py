@@ -18,6 +18,7 @@ from .const import (
     CONF_KEY,
     CONF_METER_PROTOCOL,
     CONF_POLL_INTERVAL,
+    CONF_PROSUMER,
     DEFAULT_POLL_INTERVAL_S,
     DOMAIN,
     MAX_POLL_INTERVAL_S,
@@ -43,6 +44,7 @@ CREDENTIALS_SCHEMA = vol.Schema(
         vol.Required(CONF_KEY): str,
         vol.Required(CONF_IV): str,
         vol.Required(CONF_METER_PROTOCOL, default=METER_PROTOCOL_UNCHANGED): vol.In(PROTOCOL_CHOICES),
+        vol.Required(CONF_PROSUMER, default=False): bool,
     }
 )
 
@@ -171,7 +173,10 @@ class OneMeterConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_KEY: key,
                         CONF_IV: iv,
                     },
-                    options={CONF_METER_PROTOCOL: proto_choice},
+                    options={
+                        CONF_METER_PROTOCOL: proto_choice,
+                        CONF_PROSUMER: user_input.get(CONF_PROSUMER, False),
+                    },
                 )
 
         return self.async_show_form(
@@ -243,6 +248,7 @@ class OneMeterOptionsFlow(OptionsFlow):
                     data={
                         CONF_POLL_INTERVAL: interval,
                         CONF_METER_PROTOCOL: user_input[CONF_METER_PROTOCOL],
+                        CONF_PROSUMER: user_input.get(CONF_PROSUMER, False),
                     },
                 )
 
@@ -259,6 +265,10 @@ class OneMeterOptionsFlow(OptionsFlow):
                         CONF_METER_PROTOCOL,
                         default=opts.get(CONF_METER_PROTOCOL, METER_PROTOCOL_UNCHANGED),
                     ): vol.In(PROTOCOL_CHOICES),
+                    vol.Required(
+                        CONF_PROSUMER,
+                        default=opts.get(CONF_PROSUMER, False),
+                    ): bool,
                 }
             ),
             errors=errors,

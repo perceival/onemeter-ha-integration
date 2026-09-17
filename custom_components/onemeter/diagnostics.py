@@ -36,5 +36,6 @@ async def async_get_config_entry_diagnostics(
             "rx_errors": data.rx_errors,
             "rx_rejections": data.rx_rejections,
             "state": data.state,
+            "device_clock_drift_s": data.device_clock_drift_s,
         },
     }

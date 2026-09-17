@@ -33,16 +33,53 @@ CMD_AUTO_DETECT = 0x19      # ask the device to probe its optical port
                             # is a bare ACK with no detection payload;
                             # kept on the allow-list because sending it
                             # is harmless.
+CMD_DEVICE_TIME = 0x1D      # read the device's own clock. Response is a
+                            # 4-byte little-endian unix timestamp followed
+                            # by a second 4-byte field whose meaning isn't
+                            # pinned down (varies unpredictably run to run
+                            # on hardware with nothing attached to the
+                            # optical port — likely raw/noisy ADC data
+                            # from the unconnected sensor, not a counter).
+                            # Cheap, single-frame, no session/buffer
+                            # overhead — useful as a lightweight
+                            # liveness/clock-drift check.
 
 # Unsolicited notifications we expect to receive (not sent).
 CMD_LIVE_OBIS_A = 0x20
 CMD_LIVE_OBIS_B = 0x25
 
+# --- Known-real, undocumented commands: NOT on the send allow-list ----------
+# Found and confirmed real (device replies with a distinct, non-error
+# response; never triggers the canned 0xFF auth/state-mismatch rejection)
+# via live probing across two physical devices on 2026-09-15/16, but their
+# semantics aren't understood well enough yet to expose safely. Recorded
+# here so future work doesn't have to rediscover them from scratch — do
+# NOT add these to ALLOWED_DEV_COMMANDS without first working out what
+# each one actually does and whether any has a persistent (flash-write)
+# effect.
+#   0x15 — empty-ACK response. Reset/clear-flag shaped.
+#   0x16 — real getter; observed value has differed (0 vs 1) across
+#          devices/sessions. Meaning unknown.
+#   0x1A — accepts a 2-byte payload (tested with [0x00, 0x01]); replies
+#          with a single-byte value. Possibly CRC/checksum related.
+#   0x1E — accepts a 1-byte payload constrained to <0x10; replies with an
+#          empty ACK. The one command in this list most likely to have a
+#          *persistent* effect — treat with extra care if revisited.
+#   0x22 — empty-ACK response. Confirmed identical across two devices.
+#   0x27 — real getter, stable value across sessions/devices (observed:
+#          9 with an empty/zero payload; any other payload byte gets a
+#          generic "invalid parameter" error, not a per-index value).
+#   0x50, 0x51 — real getters, both observed returning value 2 on two
+#          separate physical devices.
+#   0x86 — real command, uniquely answers with TWO response frames
+#          instead of one. Confirmed *not* a precursor to CMD_IDENTITY
+#          (0x87) — sending it first has zero effect on 0x87's payload.
+
 #: Commands the integration is allowed to *send* during normal operation.
 #: Anything outside this set raises at build time.
 #:
 #: Notes on persistence:
-#:   - 0xAA / 0x13 / 0x23 / 0x18 / 0x87 / 0x36 / 0x82 / 0x21: RAM-only or read-only.
+#:   - 0xAA / 0x13 / 0x23 / 0x18 / 0x87 / 0x36 / 0x82 / 0x21 / 0x1D: RAM-only or read-only.
 #:   - 0x14 (set protocol): **persistent** — writes to flash. Only sent when the
 #:     user explicitly changes the protocol option. This is acknowledged in
 #:     the options-flow UI text.
@@ -57,6 +94,7 @@ ALLOWED_DEV_COMMANDS = frozenset({
     CMD_COMM_STATS,
     CMD_FS_PARAMS,
     CMD_LAST_OBIS,
+    CMD_DEVICE_TIME,
 })
 
 

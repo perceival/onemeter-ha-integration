@@ -57,7 +57,7 @@ from .const import (
     WRITE_TIMEOUT_S,
 )
 from .protocol import commands as proto_cmds
-from .protocol.decode import AutoDetectResult, BlockHeader, DataRecord, Identity, ObisEntry, format_mac
+from .protocol.decode import AutoDetectResult, BlockHeader, DataRecord, DeviceTime, Identity, ObisEntry, format_mac
 from .protocol.session import (
     BatteryReading,
     CommStats,
@@ -118,6 +118,10 @@ class OneMeterData:
     fs_params_raw: bytes | None = None
     configured_protocol_name: str | None = None  # human-readable, after we send 0x14
     detected_meter: str | None = None              # last cmd 0x19 result summary
+    # Device's own clock (cmd 0x1D) minus our clock at the moment of the
+    # probe. Large drift can indicate the device's RTC isn't holding time
+    # well, or that TIME_SYNC isn't reaching it.
+    device_clock_drift_s: int | None = None
     # Per-dataType register store, populated by cmd 0x20 records (live
     # mode). Key = dataType int, value = a small dict with the latest
     # raw value + sentinel + last_seen_at.
@@ -610,6 +614,13 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
             self.data.detected_meter = event.summary()
             self._last_ack_cmd = 0x19
             _LOGGER.info("OneMeter %s: auto-detect result: %s", self.address, event.summary())
+        elif isinstance(event, DeviceTime):
+            self.data.device_clock_drift_s = event.clock - int(time.time())
+            self._last_ack_cmd = 0x1D
+            _LOGGER.debug(
+                "OneMeter %s: device clock=%d drift=%+ds",
+                self.address, event.clock, self.data.device_clock_drift_s,
+            )
         elif isinstance(event, BlockHeader):
             # Scopes the dataType for subsequent 0x20 records.
             self._current_block = event

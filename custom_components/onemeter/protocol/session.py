@@ -32,6 +32,7 @@ from .decode import (
     BlockHeader,
     CommStats,
     DataRecord,
+    DeviceTime,
     FSParams,
     Identity,
     ObisEntry,
@@ -40,6 +41,7 @@ from .decode import (
     parse_block_header,
     parse_comm_stats,
     parse_data_record,
+    parse_device_time,
     parse_fs_params,
     parse_identity,
     parse_last_obis,
@@ -82,6 +84,7 @@ RxEvent = (
     | CommStats
     | FSParams
     | AutoDetectResult   # cmd 0x19
+    | DeviceTime         # cmd 0x1D
     | BlockHeader        # cmd 0x25
     | DataRecord         # cmd 0x20
     | RejectionEvent
@@ -236,6 +239,12 @@ class OneMeterSession:
             res = parse_auto_detect(payload)
             if res is not None:
                 return res
+            return UnknownResponse(cmd=cmd, payload=payload)
+
+        if cmd == commands.CMD_DEVICE_TIME:
+            dt = parse_device_time(payload)
+            if dt is not None:
+                return dt
             return UnknownResponse(cmd=cmd, payload=payload)
 
         # Live-stream frames — unsolicited, only arrive in live mode.
