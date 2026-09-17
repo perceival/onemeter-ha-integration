@@ -1,6 +1,5 @@
 """Decoder unit tests."""
 import pytest
-
 from onemeter.protocol import decode
 
 
@@ -61,6 +60,50 @@ def test_parse_last_obis_trailing_partial_dropped():
 
 def test_parse_last_obis_empty():
     assert decode.parse_last_obis(b"") == []
+
+
+def test_parse_last_obis_real_device_capture():
+    """Full cmd 0x21 payload captured live from a device with a real
+    meter attached (Apator NORAX 3), 2026-09-17 — the first time this
+    path was exercised against genuine accumulated data rather than
+    the all-0xFF "no meter" sentinel devices without a meter return.
+
+    Cross-checks below aren't just decode sanity: they're evidence the
+    bytes are real energy-register data, not noise.
+    """
+    raw = bytes.fromhex(
+        "000009010085000000000902193500000001080082333d000001080182333d"
+        "0000010802000000000002080072000000000208017200000000020802000000"
+        "0000030800153c030000030801153c0300000308020000000000040800e60f11"
+        "0000040801e60f11000004080200000000000f0800f5333d00000f0801f5333d"
+        "00000f080200000000000f080300000000000f080400000000014301007dac8e"
+        "05000f070031000000ff010104f896ab6aff01010663030000ff010107b10000"
+        "00ff01010af896ab6aff01010b4410ce00ff01010e3914ced3ff0101110002ff"
+        "7fff0101133b000000"
+    )
+    entries = decode.parse_last_obis(raw)
+    assert len(entries) == 29
+    by_obis = {e.obis: e.value for e in entries}
+
+    # 1.8.0 (active energy import) — no sentinel, plausible household kWh
+    # register (raw units of 10 Wh, per obis_map.py's 0.01 scale factor).
+    e_1_8_0 = by_obis[bytes([0, 1, 8, 0])]
+    e_2_8_0 = by_obis[bytes([0, 2, 8, 0])]
+    e_15_8_0 = by_obis[bytes([0, 15, 8, 0])]
+    assert e_1_8_0 == 4010882
+    # 15.8.0 (sum active energy) is import + export, within rounding.
+    assert abs(e_15_8_0 - (e_1_8_0 + e_2_8_0)) <= 1
+
+    # 255.1.1.4 — device's "last meter read" timestamp (unix seconds).
+    # Captured live on 2026-09-17; decodes to that same day.
+    import datetime
+
+    ts = by_obis[bytes([0xFF, 1, 1, 4])]
+    dt = datetime.datetime.fromtimestamp(ts, tz=datetime.UTC)
+    assert dt.date() == datetime.date(2026, 9, 17)
+
+    # None of these are the 0xFFFFFFFF "no value" sentinel.
+    assert all(v != 0xFFFFFFFF for v in by_obis.values())
 
 
 def test_parse_comm_stats_empty_payload_is_none():

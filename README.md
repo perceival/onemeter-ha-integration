@@ -45,8 +45,31 @@ your meter's registers" section below.
 | `button.<name>_poll_now` | Triggers an immediate session — refresh all sensors right now, including a brief listen for live meter pushes. |
 | `button.<name>_auto_detect_meter` | Asks the device to probe the optical port (`cmd 0x19`). Disabled until the device has reported successful meter reads at least once. |
 
-Plus, **once a meter is attached and pushes data**, the integration
-auto-creates per-register sensors as it discovers them:
+Plus, **once a meter is attached and has accumulated a cached reading**
+(cmd 0x21 — polled every session), a fixed set of standard-OBIS sensors
+work out of the box, no per-meter correlation needed:
+
+| Entity | OBIS | What it shows |
+|---|---|---|
+| `sensor.<name>_energy_total` | `0.15.8.0` | Total active energy across all tariffs, kWh |
+| `sensor.<name>_energy_tariff_1` | `0.15.8.1` | Energy on tariff 1, kWh |
+| `sensor.<name>_energy_tariff_2` | `0.15.8.2` | Energy on tariff 2, kWh (disabled by default) |
+| `sensor.<name>_energy_tariff_3` | `0.15.8.3` | Energy on tariff 3, kWh (disabled by default) |
+| `sensor.<name>_last_meter_read` | `255.1.1.4` | Timestamp of the device's last successful meter read |
+
+These read as `unavailable` until a real reading has been cached (a
+device with no meter attached returns the `0xFFFFFFFF` sentinel for
+every entry). The scale factor (0.01, i.e. each register unit is
+10 Wh) and the `energy_total`/`last_meter_read` codes are confirmed
+against a real Apator NORAX 3 — see `CHANGELOG.md`. Other meter
+families may use different or additional OBIS codes; unrecognized
+ones are logged (`OneMeter ...: cached OBIS entry ...`) but don't get
+an entity. `tools/dump_last_obis.py` dumps the raw entries directly
+over BLE if you want to see what your meter reports before extending
+`obis_map.py`.
+
+Separately, **once a meter is attached and pushes live data**, the
+integration auto-creates per-register sensors as it discovers them:
 
 | Entity | What it shows |
 |---|---|
@@ -55,7 +78,11 @@ auto-creates per-register sensors as it discovers them:
 
 The mapping from `<N>` (the device's `dataType`) to standard OBIS codes
 is meter-dependent — see [Discovering your meter's
-registers](#discovering-your-meters-registers) below.
+registers](#discovering-your-meters-registers) below. This is a
+different mechanism from the cached-OBIS sensors above: those use
+standard OBIS codes shipped in `obis_map.py`, while these use the
+device's own internal per-model register numbering and need manual
+correlation.
 
 ## Requirements
 

@@ -26,6 +26,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "Polite-close" `cmd 0x23 ()` sent before every disconnect.
 - Stuck-state persistent notification after 10 consecutive login
   failures, suggesting the user wait rather than re-enter credentials.
+- `tools/dump_last_obis.py` — standalone diagnostic for cmd 0x21
+  (cached OBIS registers), independent of the HA coordinator. Also
+  demonstrates the wait-for-reassembly-completion pattern manual
+  scripts need but the coordinator gets for free.
+
+### Validated
+
+- `cmd 0x21` (cached OBIS registers) decoded and cross-checked against
+  a real Apator NORAX 3 meter for the first time: `energy_total`
+  (`0.15.8.0`) matched the sum of import (`1.8.0`) and export (`2.8.0`)
+  registers within rounding, and `last_meter_read` (`255.1.1.4`)
+  decoded to the correct current date. Confirms the `obis_map.py`
+  scale factor (0.01) and the `energy_total`/`last_meter_read` sensors
+  are correct against real hardware, not just synthetic test data.
+  Regression test added in `tests/test_decode.py` using the real
+  captured payload.
 
 ### Known limitations
 
