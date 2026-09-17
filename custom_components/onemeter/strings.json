@@ -47,7 +47,7 @@
     "step": {
       "init": {
         "title": "OneMeter — options",
-        "description": "Each poll wakes the BLE radio, logs in, reads the device, and disconnects. The default 1 hour cadence gives roughly 12 months on the CR2032 battery. Shorter intervals significantly shorten battery life. Allowed range: {min_s}–{max_s} seconds. Press the \"Poll now\" button to refresh between scheduled polls.\n\nChanging the meter protocol writes to the device's flash on the next poll. 'Leave unchanged' is the safe default — the integration won't touch the device's protocol setting.\n\nAre you a prosumer (you also feed energy back to the grid, e.g. solar)? Enables the Energy export total sensor by default. Most installs should leave this unchecked.",
+        "description": "Each poll wakes the BLE radio, logs in, reads the device, and disconnects. The default 1 hour cadence gives roughly 12 months on the CR2032 battery. Shorter intervals significantly shorten battery life. Allowed range: {min_s}–{max_s} seconds. Press the \"Poll now\" button to refresh between scheduled polls.\n\nChanging the meter protocol writes to the device's flash on the next poll. 'Leave unchanged' is the safe default — the integration won't touch the device's protocol setting.\n\nAre you a prosumer (you also feed energy back to the grid, e.g. solar)? Enables the Energy export total sensor by default for new installs. Most installs should leave this unchecked. If that sensor was already created and disabled, checking this box now won't un-hide it automatically — enable it once under Settings → Devices & Services → Entities.",
         "data": {
           "poll_interval": "Poll interval (seconds)",
           "meter_protocol": "Meter protocol",
