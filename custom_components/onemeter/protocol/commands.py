@@ -74,6 +74,38 @@ CMD_LIVE_OBIS_B = 0x25
 #   0x86 — real command, uniquely answers with TWO response frames
 #          instead of one. Confirmed *not* a precursor to CMD_IDENTITY
 #          (0x87) — sending it first has zero effect on 0x87's payload.
+#
+# Found 2026-09-19 against a device running a *different* firmware build
+# than the one behind the six bytes above (confirmed via Ghidra on that
+# build's own binary, not just live probing):
+#   0x30 — real, distinct getter (15-byte all-zero payload) on that build.
+#          On another physical unit running yet another build it instead
+#          returned the generic "unimplemented" fallback shape — this
+#          command's presence is build-dependent, not universal.
+#   0x31 — on the same build as 0x30, returns a large multi-fragment
+#          response: dozens of 16-bit values, mostly small integers with
+#          occasional larger spikes and 0xFFFF sentinels scattered through
+#          it. Shape is consistent with a timing histogram or per-event
+#          duration log (it sits directly next to CMD_COMM_STATS in the
+#          command-byte space). Also build-dependent — the other unit
+#          returned the generic fallback for this one too.
+#   0x3A — confirmed real and rich on *two different* physical builds
+#          (unlike 0x30/0x31, this one isn't build-dependent). Traced via
+#          Ghidra to a dedicated handler that calls a helper assembling a
+#          **fresh 128-byte "extended diagnostics" record** on every
+#          request — not a single repeating log array, but ~15+ distinct
+#          fields: several independent 32-bit timestamps for different
+#          tracked events, single-byte counters, a handful of bit-packed
+#          boolean flags (each sourced from its own separate helper call),
+#          and at least one checksum-shaped field. Response is multi-
+#          fragment (`[cmd=0x3A][0x80 payload]`, same header+chained-IV
+#          reassembly as CMD_LAST_OBIS/CMD_IDENTITY). On a device with
+#          real meter history (975+ successful reads), several of the
+#          timestamp fields are populated with genuine recent Unix times;
+#          on a fresh/no-history device they're mostly zero. Individual
+#          field semantics beyond "these are real timestamps/counters"
+#          are not yet decoded — would need tracing ~10 more helper
+#          functions one at a time to fully map.
 
 #: Commands the integration is allowed to *send* during normal operation.
 #: Anything outside this set raises at build time.
