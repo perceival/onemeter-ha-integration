@@ -51,12 +51,14 @@
     "step": {
       "init": {
         "title": "OneMeter — options",
-        "description": "Each poll wakes the BLE radio, logs in, reads the device, and disconnects. The default 1 hour cadence gives roughly 12 months on the CR2032 battery. Shorter intervals significantly shorten battery life. Allowed range: {min_s}–{max_s} seconds. Press the \"Poll now\" button to refresh between scheduled polls.\n\nChanging the meter protocol writes to the device's flash on the next poll. 'Leave unchanged' is the safe default — the integration won't touch the device's protocol setting.\n\nAre you a prosumer (you also feed energy back to the grid, e.g. solar)? Enables the Energy export total sensor by default for new installs. Most installs should leave this unchecked. If that sensor was already created and disabled, checking this box now won't un-hide it automatically — enable it once under Settings → Devices & Services → Entities.\n\n'Read data passively' only has an effect when the passive key/IV were entered at setup. It keeps the integration off the GATT link while the device's advertisements are still being decoded, and connects again once they go quiet. Uncheck it to always read over GATT — useful to compare the two paths.",
+        "description": "Each poll wakes the BLE radio, logs in, reads the device, and disconnects. The default 1 hour cadence gives roughly 12 months on the CR2032 battery. Shorter intervals significantly shorten battery life. Allowed range: {min_s}–{max_s} seconds. Press the \"Poll now\" button to refresh between scheduled polls.\n\nChanging the meter protocol writes to the device's flash on the next poll. 'Leave unchanged' is the safe default — the integration won't touch the device's protocol setting.\n\nAre you a prosumer (you also feed energy back to the grid, e.g. solar)? Enables the Energy export total sensor by default for new installs. Most installs should leave this unchecked. If that sensor was already created and disabled, checking this box now won't un-hide it automatically — enable it once under Settings → Devices & Services → Entities.\n\n'Read data passively' keeps the integration off the GATT link while the device's advertisements are being decoded, and connects again once they go quiet. It needs the device's passive key/IV — a different pair from the AES key/IV, read by tools/extract_credentials.py and entered below. Currently {passive_state}. Leave both fields blank to keep what is stored; enter a single '-' to remove the pair. They are never shown here once saved.",
         "data": {
           "poll_interval": "Poll interval (seconds)",
           "meter_protocol": "Meter protocol",
           "is_prosumer": "I'm a prosumer (I also produce energy)",
-          "passive_reading": "Read data passively when possible"
+          "passive_reading": "Read data passively when possible",
+          "passive_key": "Passive key (32 hex chars, blank = keep stored)",
+          "passive_iv": "Passive IV (32 hex chars, blank = keep stored)"
         }
       }
     },

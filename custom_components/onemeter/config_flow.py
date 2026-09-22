@@ -325,12 +325,43 @@ class OneMeterConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class OneMeterOptionsFlow(OptionsFlow):
-    """Options flow: poll interval + meter protocol.
+    """Options flow: poll interval, meter protocol, and the passive pair.
 
     Changing the protocol choice causes cmd 0x14 to be sent on the next
     session — that's a flash-write on the device. The UI string makes
     that explicit.
     """
+
+    def _apply_passive_credentials(self, passive_key: str | None, passive_iv: str | None) -> None:
+        """Write a passive key/IV pair (or its removal) into entry data.
+
+        Secrets live in `entry.data`, never in `entry.options` — options are
+        rendered straight back into this form, so storing one there would put it
+        on screen. That means an explicit update_entry call.
+
+        Doing this from the options flow is what makes Configure the place a
+        user actually expects to be able to turn passive reading on. Before it,
+        the pair could only be entered on the *reauth* form, which Home Assistant
+        only offers once an entry is already flagged as needing reauthentication
+        — and this integration deliberately never flags that (it raises a
+        notification instead), so a healthy entry had no route to those fields at
+        all.
+        """
+        data = dict(self.config_entry.data)
+        changed = False
+        if PASSIVE_CLEAR_TOKEN in (passive_key, passive_iv):
+            for field in (CONF_PASSIVE_KEY, CONF_PASSIVE_IV):
+                if data.pop(field, None) is not None:
+                    changed = True
+        else:
+            if passive_key and data.get(CONF_PASSIVE_KEY) != passive_key:
+                data[CONF_PASSIVE_KEY] = passive_key
+                changed = True
+            if passive_iv and data.get(CONF_PASSIVE_IV) != passive_iv:
+                data[CONF_PASSIVE_IV] = passive_iv
+                changed = True
+        if changed:
+            self.hass.config_entries.async_update_entry(self.config_entry, data=data)
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
@@ -338,7 +369,15 @@ class OneMeterOptionsFlow(OptionsFlow):
             interval = int(user_input[CONF_POLL_INTERVAL])
             if interval < MIN_POLL_INTERVAL_S or interval > MAX_POLL_INTERVAL_S:
                 errors[CONF_POLL_INTERVAL] = "interval_out_of_range"
-            else:
+            passive_key = _normalize_optional_hex32(
+                user_input.get(CONF_PASSIVE_KEY, ""), errors, CONF_PASSIVE_KEY
+            )
+            passive_iv = _normalize_optional_hex32(
+                user_input.get(CONF_PASSIVE_IV, ""), errors, CONF_PASSIVE_IV
+            )
+            _check_passive_pair(passive_key, passive_iv, errors)
+            if not errors:
+                self._apply_passive_credentials(passive_key, passive_iv)
                 return self.async_create_entry(
                     title="",
                     data={
@@ -370,11 +409,19 @@ class OneMeterOptionsFlow(OptionsFlow):
                         CONF_PASSIVE,
                         default=opts.get(CONF_PASSIVE, DEFAULT_PASSIVE),
                     ): bool,
+                    # Blank keeps whatever is stored; '-' removes the pair.
+                    vol.Optional(CONF_PASSIVE_KEY, default=""): str,
+                    vol.Optional(CONF_PASSIVE_IV, default=""): str,
                 }
             ),
             errors=errors,
             description_placeholders={
                 "min_s": str(MIN_POLL_INTERVAL_S),
                 "max_s": str(MAX_POLL_INTERVAL_S),
+                "passive_state": (
+                    "a passive key/IV pair is currently stored"
+                    if self.config_entry.data.get(CONF_PASSIVE_KEY)
+                    else "no passive key/IV pair is stored yet"
+                ),
             },
         )
