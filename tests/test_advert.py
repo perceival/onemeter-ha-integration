@@ -147,7 +147,7 @@ def test_parse_advertisement_fixture_plaintext():
     assert [(r.tag, r.value) for r in result.records] == [
         (0x0C, 12345678),  # 0.1.8.0 energy import, raw units of 10 Wh
         (0x11, 42),        # 0.2.8.0 energy export
-        (0x16, 305000),    # 0.3.8.0 reactive energy, inductive
+        (0x16, 305000),    # 0.3.8.0 reactive energy consumed
     ]
 
 
@@ -159,7 +159,7 @@ def test_parse_advertisement_mirrored_pair_carries_same_import():
     result = advert.parse_advertisement(CAPTURE_B)
     assert result is not None
     assert [(r.tag, r.value) for r in result.records] == [
-        (0x1B, 8642000),   # 0.4.8.0 reactive energy, capacitive
+        (0x1B, 8642000),   # 0.4.8.0 reactive energy returned
         (0x0D, 12345678),  # 0.1.8.0 again, under the paired tag
         (0x12, 42),        # 0.2.8.0 again
     ]

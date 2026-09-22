@@ -548,6 +548,7 @@ class OneMeterRawObisSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity
         # Codes we have identified get their name in parentheses, so the entity
         # list reads "OBIS <code> (<label>)" — see protocol/obis_labels.py.
         label = label_for(obis)
+        self._has_label = label is not None
         self._attr_name = f"OBIS {format_obis(obis)}" + (f" ({label})" if label else "")
         self._attr_device_info = _device_info(coordinator)
 
@@ -561,7 +562,13 @@ class OneMeterRawObisSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity
         # No raw_value attribute: it would only restate the state, and the
         # device's unfiltered value (sentinel included) is what
         # `cached_registers` is for. Attributes here say what the entity *is*.
-        return {
-            "obis": format_obis(self._obis),
-            "note": "raw device units — no scale is known for this code",
-        }
+        # The note must not read "no scale is known for this code" once the name
+        # claims to know *which* register it is — that would invite reading a raw
+        # value straight against a scaled kWh sibling.
+        note = (
+            "raw device units — the name identifies the register, but no scale "
+            "is applied to this value"
+            if self._has_label
+            else "raw device units — no scale is known for this code"
+        )
+        return {"obis": format_obis(self._obis), "note": note}

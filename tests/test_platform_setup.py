@@ -160,7 +160,7 @@ def test_a_labelled_code_gets_its_label_in_parentheses(monkeypatch):
     raw = _setup(_Coordinator({labelled: 5, unlabelled: 7}), _registry(), monkeypatch)
     names = sorted(e.name for e in raw)
     assert names == [
-        "OBIS 0.3.8.0 (reactive energy, inductive)",
+        "OBIS 0.3.8.0 (reactive energy consumed)",
         "OBIS 0.7.8.0",
     ]
 
@@ -176,6 +176,20 @@ def test_descriptor_sensors_are_not_given_a_label(monkeypatch):
         e.name for e in _LAST_ADDED if type(e).__name__ == "OneMeterObisSensor"
     }
     assert descriptor_names == {d.name for d in sensor.KNOWN_OBIS.values()}
+
+
+def test_a_labelled_raw_entity_does_not_claim_its_code_is_unknown(monkeypatch):
+    """The note has to agree with the name: "no scale is known for this code"
+    next to a name that identifies the register is what invites reading a raw
+    value straight against a scaled kWh sibling (which runs 100x smaller)."""
+    labelled, unlabelled = bytes([0, 3, 8, 0]), bytes([0, 7, 8, 0])
+    raw = _setup(_Coordinator({labelled: 5, unlabelled: 7}), _registry(), monkeypatch)
+    notes = {e.name: e.extra_state_attributes["note"] for e in raw}
+    assert notes["OBIS 0.3.8.0 (reactive energy consumed)"] == (
+        "raw device units — the name identifies the register, but no scale "
+        "is applied to this value"
+    )
+    assert notes["OBIS 0.7.8.0"] == "raw device units — no scale is known for this code"
 
 
 # --- label-map invariants (need KNOWN_OBIS, which imports Home Assistant) ------
