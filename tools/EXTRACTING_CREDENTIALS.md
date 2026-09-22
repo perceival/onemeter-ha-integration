@@ -149,6 +149,9 @@ The script:
   (mobKey) and 16 bytes at `0x0003F034` (IV), plus the broadcast pair at
   `0x0003F044`/`0x0003F054` (optional — a failed read there is a warning,
   not an error).
+- Cross-checks the redundant **second copy** of the identity block, three
+  pages later (`0x0003FC24`), and warns if it disagrees — see
+  [troubleshooting](#the-backup-copy-of-the-identity-block-holds-different-credentials).
 - Leaves the CPU **halted** and exits. It deliberately does not resume: the
   bypass gadget writes PC without saving the application's execution point, so
   `resume` would continue from the gadget (or from wherever the last `step`
@@ -285,6 +288,21 @@ retries a failed read instead of aborting the whole block, so this should no
 longer appear. If it still does, the target is unusually slow to halt: raise
 `WAIT_HALT_TIMEOUT_S` near the top of the script, and check that nothing else is
 holding the debug link.
+
+### "The backup copy of the identity block holds DIFFERENT credentials"
+
+The identity block is stored twice, `0x00000C00` apart. The firmware reads the
+**primary** (`0x0003F024`), which is what the script reports, so the values are
+correct — but the second copy is not kept in sync, and on a unit whose identity
+was ever rewritten by writing only the primary (e.g. reflashed with another
+device's firmware and then re-personalised) it still holds the *previous*
+owner's keys.
+
+That is worth knowing rather than alarming: if you did not expect this device to
+have been re-personalised, confirm which set it actually accepts (a `LOGIN`
+against the device with each candidate settles it — the wrong key is rejected).
+The warning is deliberately not silent, because a stale backup is exactly the
+kind of plausible-looking wrong credential that wastes an afternoon.
 
 ### "I keep getting different values for the same address"
 

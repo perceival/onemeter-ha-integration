@@ -71,6 +71,13 @@ PROMPT = b"> "
 # nRF51822 flash offsets (per our analysed firmware)
 FLASH_MOBKEY_OFFSET = 0x0003F024  # 16 bytes — AES-128 key
 FLASH_IV_OFFSET     = 0x0003F034  # 16 bytes — initial cleartext / IV
+# The identity block is stored TWICE, this far apart (three 1 KB flash pages).
+# The firmware reads the primary; the second copy is a redundant record that is
+# NOT kept in sync — a device whose identity was ever rewritten by writing the
+# primary alone (e.g. after being reflashed with another unit's firmware and then
+# re-personalised) still carries the *donor's* credentials here. So this offset
+# is only ever used for a cross-check, never as a source of truth.
+FLASH_IDENTITY_COPY_DELTA = 0x00000C00
 # The advertisement broadcast (passive reading) uses a second AES-CCM key pair,
 # stored immediately after mobKey/IV in the same configuration page. It is
 # unrelated to the GATT session cipher above; the integration only needs it for
@@ -112,6 +119,22 @@ _pc_hijacked = False
 
 class OpenOCDError(RuntimeError):
     pass
+
+
+def identity_backup_matches(
+    primary: tuple[bytes, bytes], backup: tuple[bytes | None, bytes | None]
+) -> bool:
+    """Whether the redundant copy of the identity block agrees with the primary.
+
+    True when the backup could not be read — an unreadable copy is not evidence
+    of a mismatch, and warning about it would train the operator to ignore the
+    warning. False means the device's identity was rewritten without updating the
+    backup, so the backup holds the *previous* credentials. Pure, so the rule is
+    testable without a device (tests/test_extract_gadget.py).
+    """
+    if backup[0] is None or backup[1] is None:
+        return True
+    return backup == primary
 
 
 def _should_resume(*, pc_hijacked: bool, no_resume_flag: bool) -> bool:
@@ -434,6 +457,41 @@ def main() -> int:
             advisories.append(
                 "Broadcast key/IV is all-0xFF — this device has no passive "
                 "reading pair; the integration will read everything over GATT."
+            )
+
+        # Cross-check against the redundant copy of the identity block. The
+        # primary above is authoritative (it is what the firmware reads), but a
+        # disagreement means this device's identity was rewritten without
+        # updating the backup — i.e. it was re-personalised at some point, and
+        # the backup holds someone else's credentials. Worth knowing before
+        # trusting any value.
+        try:
+            backup_mobkey = read_block_via_gadget(
+                sock, args.mobkey_offset + FLASH_IDENTITY_COPY_DELTA, 16,
+                args.gadget_pc, args.gadget_reg,
+            )
+            backup_iv = read_block_via_gadget(
+                sock, args.iv_offset + FLASH_IDENTITY_COPY_DELTA, 16,
+                args.gadget_pc, args.gadget_reg,
+            )
+        except OpenOCDError as exc:
+            backup_mobkey = backup_iv = None
+            advisories.append(
+                f"the backup copy of the identity block could not be read ({exc}); "
+                f"the values above come from the primary copy and are unaffected."
+            )
+        if not identity_backup_matches(
+            (mobkey, iv), (backup_mobkey, backup_iv)
+        ):
+            warnings.append(
+                f"The backup copy of the identity block "
+                f"(0x{args.mobkey_offset + FLASH_IDENTITY_COPY_DELTA:08x}) holds "
+                f"DIFFERENT credentials from the primary. The primary is the one the "
+                f"firmware uses, so the values above are correct — but this device has "
+                f"been re-personalised at some point (e.g. after a firmware swap from "
+                f"another unit), and the backup still carries the previous owner's "
+                f"keys. If you did not expect that, confirm which set the device "
+                f"actually accepts before using them."
             )
 
         result = {

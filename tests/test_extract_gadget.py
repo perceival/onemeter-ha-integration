@@ -228,6 +228,34 @@ def test_read_ble_mac_assembles_the_six_bytes():
     assert extract.read_ble_mac(sock) == "C0:DE:33:22:11:00"
 
 
+# --- the identity backup cross-check ---------------------------------------
+
+
+def test_backup_matching_the_primary_is_not_a_mismatch():
+    assert extract.identity_backup_matches((b"a" * 16, b"b" * 16),
+                                          (b"a" * 16, b"b" * 16)) is True
+
+
+def test_backup_holding_other_credentials_is_a_mismatch():
+    """A device re-personalised by writing only the primary keeps the previous
+    owner's keys in the backup — silently wrong credentials that pass every
+    plausibility check, so this has to be detected explicitly."""
+    assert extract.identity_backup_matches((b"a" * 16, b"b" * 16),
+                                          (b"c" * 16, b"d" * 16)) is False
+
+
+def test_backup_mismatching_in_only_one_half_is_a_mismatch():
+    assert extract.identity_backup_matches((b"a" * 16, b"b" * 16),
+                                          (b"a" * 16, b"z" * 16)) is False
+
+
+def test_unreadable_backup_is_not_reported_as_a_mismatch():
+    """Otherwise a failed optional read would produce a falsely alarming
+    warning, and the operator would learn to ignore it."""
+    assert extract.identity_backup_matches((b"a" * 16, b"b" * 16), (None, None)) is True
+    assert extract.identity_backup_matches((b"a" * 16, b"b" * 16), (b"a" * 16, None)) is True
+
+
 # --- the resume rule --------------------------------------------------------
 
 
