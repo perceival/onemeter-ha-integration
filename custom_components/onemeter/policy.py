@@ -9,7 +9,7 @@ are all in this decision, not in the plumbing around it.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from enum import Enum
 
 from .protocol.decode import SENTINEL_NO_VALUE
@@ -136,3 +136,59 @@ def merge_cached(
             continue
         out[obis] = value
     return out
+
+
+def raw_obis_candidates(
+    cached_codes: Iterable[bytes],
+    known_codes: Iterable[bytes],
+    limit: int | None = None,
+) -> tuple[bytes, ...]:
+    """OBIS codes that deserve a raw entity of their own.
+
+    A code with a descriptor already has a scaled sensor, so a raw twin would
+    just duplicate it; what is missing is the ability to see — and opt into —
+    the codes a particular meter reports that this integration has no mapping
+    for. Sorted, so the order entities are created in is stable across restarts.
+
+    `limit` caps how many are returned (None = no cap). The caller passes the
+    slots it has left, because the ceiling that matters is the total number of
+    entities created over the entry's lifetime, not the size of one batch.
+    """
+    known = set(known_codes)
+    codes = sorted({code for code in cached_codes if code not in known})
+    return tuple(codes if limit is None else codes[: max(limit, 0)])
+
+
+def raw_obis_value(value: int | None) -> int | None:
+    """The value to expose for a raw OBIS register, or None when there is none.
+
+    The device reports 0xFFFFFFFF for a register it holds no value for; passing
+    that through would show 4294967295 as if it were a reading.
+    """
+    if value is None or value == SENTINEL_NO_VALUE:
+        return None
+    return value
+
+
+def should_create_raw_obis(
+    *,
+    obis: bytes,
+    known_codes: Iterable[bytes],
+    value: int | None,
+    added_count: int,
+    limit: int,
+) -> bool:
+    """Whether a discovered OBIS code should get a raw entity of its own.
+
+    Pure so the decision the device can influence is testable: the codes come
+    from the device, and every yes here becomes a permanent entity-registry
+    entry, so each condition matters. False when the code already has a scaled
+    sensor, when the device holds no reading for it (an entity that can only
+    say "unknown" is noise), or when the entry has spent its allowance — the
+    ceiling is per entry, across the whole run, not per batch.
+    """
+    if obis in set(known_codes):
+        return False
+    if raw_obis_value(value) is None:
+        return False
+    return added_count < limit

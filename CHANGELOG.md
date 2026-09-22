@@ -37,6 +37,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   devices with passive reading configured the same entity also shows the
   broadcast-only tags under `sensor.<name>_data_source`'s attributes when they
   have no OBIS mapping yet.
+- Raw sensors for discovered OBIS registers: every code the device holds a
+  reading for and has no sensor of its own now gets one, **disabled by
+  default**, carrying the device's raw u32 — no scale or unit is invented
+  for a code whose meaning is unknown. Enable the interesting ones under Settings → Devices & Services →
+  Entities and rename them there. This is the per-code counterpart to
+  `sensor.<name>_cached_registers` (which shows every code at once, as
+  attributes): codes that already have a scaled sensor are not duplicated, and
+  the device's 0xFFFFFFFF "no value" sentinel reads as unknown rather than as
+  4294967295. Codes the device holds no reading for are skipped rather than
+  materialised as permanently-unknown entities, and creation is capped at
+  `MAX_RAW_OBIS_ENTITIES` (64) per entry: the codes are device-chosen and each
+  becomes a permanent entry in the entity registry, so they need a ceiling.
 - `button.<name>_poll_now` — triggers an immediate session. Includes
   a brief drain phase that captures any live `cmd 0x25` / `cmd 0x20`
   frames the meter pushes before disconnect.

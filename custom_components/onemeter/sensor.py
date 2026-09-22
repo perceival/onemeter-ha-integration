@@ -1,6 +1,7 @@
 """OneMeter sensor entities."""
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,15 +16,23 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory, UnitOfElectricPotential, UnitOfTime
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_PROSUMER, DOMAIN
+from .const import CONF_PROSUMER, DOMAIN, MAX_RAW_OBIS_ENTITIES
 from .coordinator import OneMeterCoordinator, OneMeterData
 from .obis_map import KNOWN_OBIS, ObisDescriptor, scaled_value, to_utc_datetime
+from .policy import (
+    raw_obis_candidates,
+    raw_obis_value,
+    should_create_raw_obis,
+)
 from .protocol.advert import ADVERT_TAG_OBIS
 from .protocol.decode import SENTINEL_NO_VALUE, format_obis
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -73,7 +82,8 @@ def _unmapped_advert_tags(data: OneMeterData) -> dict[str, Any]:
 def _cached_registers(data: OneMeterData) -> dict[str, Any]:
     """Every cached OBIS register as {A.B.C.D: raw u32 value}.
 
-    Includes codes with no descriptor (which get no entity of their own) and
+    Includes codes with no descriptor (which also get a disabled-by-default raw
+    entity of their own — see `OneMeterRawObisSensor`) and
     the device's "no value" sentinel, which shows up as 4294967295 — the point
     of this entity is to show what the device actually holds, unfiltered, so a
     meter's codes can be identified without downloading diagnostics.
@@ -284,6 +294,87 @@ async def async_setup_entry(
     for dt in coordinator.data.meter_registers:
         _add_register_entity(dt)
 
+    # Raw sensors for discovered OBIS codes that have no descriptor of their own,
+    # disabled by default. A meter reports many codes — some duplicated across
+    # tariff slots, some meaningless to us — so enabling all of them would bury
+    # the entity list; this exists so the ones you care about can be enabled
+    # individually, and so an unmapped register is visible at all. The scaled
+    # sensors above keep their own codes.
+    # Lifetime allowance (`materialised`): seeded from the entity registry, so the
+    # ceiling counts what the entry has ever created rather than what this setup
+    # run happened to see — registry entries are permanent, and every restart or
+    # options reload would otherwise mint up to MAX_RAW_OBIS_ENTITIES more for
+    # codes the device reports only later.
+    #
+    # The per-setup duplicate guard is a *separate* set: a code that is already
+    # materialised still has to be handed to the platform on every setup, or the
+    # registry entry keeps the user's enable flag and name but never gets a state.
+    raw_prefix = f"{coordinator.address}_obis_raw_"
+    registry = entity_registry.async_get(hass)
+    materialised: set[bytes] = {
+        bytes.fromhex(e.unique_id[len(raw_prefix):])
+        for e in entity_registry.async_entries_for_config_entry(
+            registry, entry.entry_id
+        )
+        if e.unique_id.startswith(raw_prefix)
+        and len(e.unique_id[len(raw_prefix):]) == 8
+        and all(c in "0123456789abcdef" for c in e.unique_id[len(raw_prefix):])
+    }
+    added_this_setup: set[bytes] = set()
+    obis_cap_warned = False
+
+    def _add_raw_obis_entity(obis: bytes) -> None:
+        nonlocal obis_cap_warned
+        if obis in added_this_setup:
+            return
+        if obis not in materialised:
+            cached = coordinator.data.cached_obis_by_code.get(obis)
+            if not should_create_raw_obis(
+                obis=obis,
+                known_codes=KNOWN_OBIS,
+                value=cached.value if cached is not None else None,
+                added_count=len(materialised),
+                limit=MAX_RAW_OBIS_ENTITIES,
+            ):
+                if len(materialised) >= MAX_RAW_OBIS_ENTITIES and not obis_cap_warned:
+                    obis_cap_warned = True
+                    _LOGGER.warning(
+                        "OneMeter %s: reached the cap of %d raw OBIS entities; "
+                        "ignoring further register codes (most recent: %s). The "
+                        "cap exists because the device picks these codes and each "
+                        "one becomes a permanent entity.",
+                        coordinator.address, MAX_RAW_OBIS_ENTITIES,
+                        format_obis(obis),
+                    )
+                return
+            materialised.add(obis)
+        # Only a code we actually hand over counts as handled: a rejected one
+        # (no reading yet, or over the cap) is reconsidered on the next offer, so
+        # a code first seen valueless still gets its entity when a value arrives
+        # — passive installs can be hours between sessions.
+        added_this_setup.add(obis)
+        # Hand it to the platform even when the registry entry already exists:
+        # HA needs the entity object on every setup, and that is the only way an
+        # enabled (or renamed) raw entity gets a state. Note a materialised code
+        # that later gains a descriptor is deliberately still re-added (a live
+        # diagnostic entity beats silently losing state); the scaled sensor is
+        # created alongside it.
+        async_add_entities([OneMeterRawObisSensor(coordinator, obis)])
+
+    coordinator.register_add_obis_entity_cb(_add_raw_obis_entity)
+    # Already-materialised codes are re-added too (their registry entry may be
+    # user-enabled), so the candidate set is the cached ones within the remaining
+    # allowance, plus everything materialised before.
+    for obis in sorted(
+        set(raw_obis_candidates(
+            coordinator.data.cached_obis_by_code,
+            KNOWN_OBIS,
+            max(MAX_RAW_OBIS_ENTITIES - len(materialised), 0),
+        ))
+        | materialised
+    ):
+        _add_raw_obis_entity(obis)
+
 
 def _device_info(coordinator: OneMeterCoordinator) -> DeviceInfo:
     return DeviceInfo(
@@ -421,3 +512,52 @@ class OneMeterRegisterTimestampSensor(CoordinatorEntity[OneMeterCoordinator], Se
         if reg is None or reg.last_seen_at is None:
             return None
         return reg.last_seen_at
+
+
+class OneMeterRawObisSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity):
+    """One discovered OBIS register, exposed raw and disabled by default.
+
+    Created for codes the device reports that have no descriptor of their own —
+    those get a scaled `OneMeterObisSensor` instead. The value is the device's
+    raw u32: an unmapped code's scale and unit are unknown, and inventing either
+    would be worse than showing the number the device actually holds.
+
+    Disabled by default because a meter exposes many codes and enabling them all
+    would bury the useful entities. Enable the ones you care about under
+    Settings -> Devices & Services -> Entities, then rename them as you like.
+    """
+
+    _attr_has_entity_name = True
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    # No state_class on purpose, for the same reason the advert counters have
+    # none: the unit and scale of an unmapped code are unknown, so these values
+    # must not feed long-term statistics even when a user enables the entity.
+
+    @property
+    def available(self) -> bool:
+        """Unavailable while the device holds no reading, like the siblings."""
+        entry = self.coordinator.data.cached_obis_by_code.get(self._obis)
+        return raw_obis_value(entry.value if entry is not None else None) is not None
+
+    def __init__(self, coordinator: OneMeterCoordinator, obis: bytes) -> None:
+        super().__init__(coordinator)
+        self._obis = obis
+        self._attr_unique_id = f"{coordinator.address}_obis_raw_{obis.hex()}"
+        self._attr_name = f"OBIS {format_obis(obis)}"
+        self._attr_device_info = _device_info(coordinator)
+
+    @property
+    def native_value(self) -> int | None:
+        entry = self.coordinator.data.cached_obis_by_code.get(self._obis)
+        return raw_obis_value(entry.value if entry is not None else None)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        # No raw_value attribute: it would only restate the state, and the
+        # device's unfiltered value (sentinel included) is what
+        # `cached_registers` is for. Attributes here say what the entity *is*.
+        return {
+            "obis": format_obis(self._obis),
+            "note": "raw device units — no scale is known for this code",
+        }

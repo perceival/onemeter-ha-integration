@@ -255,6 +255,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
         # create a new register entity the first time a new dataType
         # arrives. Wired by the sensor platform during setup.
         self._add_register_entity_cb = None
+        self._add_obis_entity_cb = None
         self._pending_ack: asyncio.Event = asyncio.Event()
         self._last_ack_cmd: int | None = None
         # Set by _on_disconnect; awaited by _safe_disconnect to confirm
@@ -373,6 +374,30 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
         this when a new `dataType` is observed for the first time, to
         create a sensor entity for it."""
         self._add_register_entity_cb = cb
+
+    def register_add_obis_entity_cb(self, cb) -> None:
+        """Wired by sensor.py during platform setup. Coordinator calls this
+        with every OBIS code it caches, so sensor.py can create a
+        disabled-by-default raw entity for the ones it has no sensor for."""
+        self._add_obis_entity_cb = cb
+
+    def _notify_obis_codes(self, codes: list[bytes]) -> None:
+        """Offer cached OBIS codes to sensor.py for entity creation.
+
+        Called on every OBIS update rather than only for genuinely new codes:
+        sensor.py owns the created-set (and skips codes that already have a
+        descriptor), so that guard lives in one place instead of two.
+        """
+        if self._add_obis_entity_cb is None:
+            return
+        for obis in codes:
+            try:
+                self._add_obis_entity_cb(obis)
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception(
+                    "OneMeter %s: failed to add a raw entity for OBIS %s",
+                    self.address, format_obis(obis),
+                )
 
     # --- Passive (advertisement) reading ------------------------------------
 
@@ -549,6 +574,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
             _LOGGER.debug(
                 "OneMeter %s: passive OBIS %s = %d", self.address, format_obis(obis), value
             )
+        self._notify_obis_codes(list(accepted))
 
     # --- Coordinator protocol -----------------------------------------------
 
@@ -932,6 +958,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
         elif isinstance(event, list):  # ObisEntry list
             self.data.last_obis_entries = event
             self.data.cached_obis_by_code = {e.obis: e for e in event}
+            self._notify_obis_codes([e.obis for e in event])
             self._last_ack_cmd = 0x21
             # Verbose per-entry logging so we can correlate against the
             # meter's display when first attaching one. Each ObisEntry is

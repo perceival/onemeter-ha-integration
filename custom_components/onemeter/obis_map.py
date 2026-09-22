@@ -7,7 +7,9 @@ side metadata (units, scale factor, device_class, etc.).
 The scale factor for energy registers is 0.01 (each "unit" in the
 register is 10 Wh = 0.01 kWh), confirmed against an Apator NORAX 3
 (SK 16-072 MI-003). Other meter families may produce different codes
-or scales; unknown codes are logged but don't get an entity created.
+or scales; unmapped codes holding a reading are logged and given a
+disabled-by-default raw sensor (`sensor.OneMeterRawObisSensor`) with no
+scale applied.
 """
 from __future__ import annotations
 

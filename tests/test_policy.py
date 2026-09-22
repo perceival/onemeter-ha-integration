@@ -5,7 +5,16 @@ where the dangerous failure modes live: a broadcast that latches the active path
 off, a gate that overrides the retry/backoff policy, and a passive merge that
 moves a counter backwards. All three are covered explicitly below.
 """
-from onemeter.policy import Action, is_fresh, merge_cached, next_action, should_notify
+from onemeter.policy import (
+    Action,
+    is_fresh,
+    merge_cached,
+    next_action,
+    raw_obis_candidates,
+    raw_obis_value,
+    should_create_raw_obis,
+    should_notify,
+)
 
 # Representative real-world values (const.py defaults).
 POLL = 3600.0
@@ -266,3 +275,111 @@ def test_window_and_cap_constants_stay_coherent():
     assert PASSIVE_MAX_SESSION_GAP_S >= MAX_POLL_INTERVAL_S
     assert PASSIVE_WAIT_S < PASSIVE_FALLBACK_S
     assert ADVERT_NOTIFY_MIN_INTERVAL_S < PASSIVE_WAIT_S
+
+
+# --- raw OBIS entity candidates (disabled-by-default discovery sensors) -------
+
+
+def test_raw_obis_candidates_skips_codes_that_already_have_a_sensor():
+    """A code with a descriptor gets a scaled sensor already — a raw twin for the
+    same code would show the same register twice under two names."""
+    known = {bytes([0, 1, 8, 0]), bytes([0, 2, 8, 0])}
+    cached = [bytes([0, 1, 8, 0]), bytes([0, 7, 8, 0]), bytes([0, 2, 8, 0])]
+    assert raw_obis_candidates(cached, known) == (bytes([0, 7, 8, 0]),)
+
+
+def test_raw_obis_candidates_is_sorted_and_deduplicated():
+    cached = [bytes([0, 9, 8, 0]), bytes([0, 3, 8, 0]), bytes([0, 9, 8, 0])]
+    assert raw_obis_candidates(cached, ()) == (
+        bytes([0, 3, 8, 0]),
+        bytes([0, 9, 8, 0]),
+    )
+
+
+def test_raw_obis_candidates_empty_when_nothing_cached():
+    assert raw_obis_candidates([], {bytes([0, 1, 8, 0])}) == ()
+
+
+def test_raw_obis_value_hides_the_no_value_sentinel():
+    """The device's 0xFFFFFFFF sentinel means "no reading"; showing it as
+    4294967295 in a sensor would look like data."""
+    assert raw_obis_value(None) is None
+    assert raw_obis_value(0xFFFFFFFF) is None
+
+
+def test_raw_obis_value_passes_real_values_through_unchanged():
+    """Raw means raw: no scale is applied, since an unmapped code's unit is
+    unknown and guessing one would be worse than showing the device's number.
+
+    The values here are deliberately synthetic. Published constants must never
+    be derived from a captured reading — not even "shifted by one" — because the
+    real captures live in tests/private/ precisely so they stay unpublished.
+    """
+    assert raw_obis_value(0) == 0
+    assert raw_obis_value(12345678) == 12345678
+    assert raw_obis_value(0xFFFFFFFE) == 0xFFFFFFFE
+
+
+def test_should_create_raw_obis_accepts_a_new_code_with_a_reading():
+    assert should_create_raw_obis(
+        obis=bytes([0, 7, 8, 0]), known_codes=(), value=5, added_count=0, limit=64
+    )
+
+
+def test_should_create_raw_obis_rejects_a_code_that_already_has_a_sensor():
+    known = {bytes([0, 1, 8, 0])}
+    assert not should_create_raw_obis(
+        obis=bytes([0, 1, 8, 0]), known_codes=known, value=5, added_count=0, limit=64
+    )
+
+
+def test_should_create_raw_obis_rejects_a_code_without_a_reading():
+    """No reading — the sentinel, or nothing cached at all — must not
+    materialise an entity that can only ever say "unknown". A device that
+    reports many valueless codes would otherwise spend the entry's allowance
+    on them."""
+    for value in (None, 0xFFFFFFFF):
+        assert not should_create_raw_obis(
+            obis=bytes([0, 7, 8, 0]), known_codes=(), value=value, added_count=0, limit=64
+        )
+
+
+def test_should_create_raw_obis_stops_at_the_cap():
+    """The ceiling is the entry's lifetime total, so the check is on the count
+    already created — not on how many this batch contains."""
+    args = dict(obis=bytes([0, 7, 8, 0]), known_codes=(), value=5, limit=64)
+    assert should_create_raw_obis(added_count=63, **args)
+    assert not should_create_raw_obis(added_count=64, **args)
+
+
+def test_raw_obis_candidates_honours_a_limit_and_stays_sorted():
+    codes = [bytes([0, i, 8, 0]) for i in range(5)]
+    assert raw_obis_candidates(codes, (), limit=2) == (
+        bytes([0, 0, 8, 0]),
+        bytes([0, 1, 8, 0]),
+    )
+    assert raw_obis_candidates(codes, (), limit=0) == ()
+    assert len(raw_obis_candidates(codes, ())) == 5  # uncapped by default
+
+
+def test_raw_obis_candidates_accepts_a_mapping_like_the_real_call_sites():
+    """Both call sites pass dicts — the coordinator's cache and `KNOWN_OBIS` —
+    so the *keys* are what gets filtered. Pinned because a change that iterated
+    values instead would silently stop filtering."""
+    cache = {
+        bytes([0, 1, 8, 0]): 7,
+        bytes([0, 3, 8, 0]): 9,
+        bytes([255, 1, 1, 11]): 3,
+    }
+    known = {bytes([0, 1, 8, 0]): object()}
+    assert raw_obis_candidates(cache, known) == (
+        bytes([0, 3, 8, 0]),
+        bytes([255, 1, 1, 11]),
+    )
+
+
+def test_should_create_raw_obis_accepts_a_mapping_for_known_codes():
+    known = {bytes([0, 1, 8, 0]): object()}
+    assert not should_create_raw_obis(
+        obis=bytes([0, 1, 8, 0]), known_codes=known, value=7, added_count=0, limit=64
+    )

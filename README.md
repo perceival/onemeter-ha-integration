@@ -47,6 +47,7 @@ your meter's registers" section below.
 | `sensor.<name>_advertisements_decoded` | Advertisements from this device that decoded successfully. |
 | `sensor.<name>_advertisements_undecodable` | Advertisements from this device that failed to decode. Should stay at 0; a rising count means the broadcast changed shape or is being corrupted. (Other units never reach this handler — the callback filters on your device's address.) |
 | `sensor.<name>_cached_registers` | Diagnostic: state is how many OBIS registers the device has reported, attributes map every one of them (`A.B.C.D` → raw value) including codes that have no sensor of their own. The quickest way to identify what a meter exposes. Note this is readable by any Home Assistant user, not just admins — unlike the diagnostics download. |
+| `sensor.<name>_obis_<A>_<B>_<C>_<D>` | One sensor per discovered OBIS register that has no sensor of its own and that the device holds a reading for — the raw device value, with no invented scale. **Disabled by default**; enable the ones you want under *Settings → Devices & Services → Entities*. |
 | `button.<name>_poll_now` | Triggers an immediate session — refresh all sensors right now, including a brief listen for live meter pushes. |
 | `button.<name>_auto_detect_meter` | Asks the device to probe the optical port (`cmd 0x19`). Disabled until the device has reported successful meter reads at least once. |
 

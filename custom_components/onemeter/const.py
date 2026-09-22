@@ -67,6 +67,14 @@ MAX_POLL_INTERVAL_S = 21600      # 6 h
 # broadcast, so the two paths sustain each other.
 PASSIVE_FALLBACK_S = 1800.0   # 30 min without a decodable data advert → one active session
 PASSIVE_WAIT_S = 60.0         # sleep slice while passive; short enough to notice a manual poll
+# Upper bound on the disabled-by-default raw OBIS entities one config entry may
+# create. The device chooses those codes, and they become persistent entries in
+# HA's entity registry, so they need a ceiling: a malfunctioning or rogue device,
+# or a decoder bug, could otherwise mint entities without limit (the code space is
+# 2^32, against 255 for the per-dataType registers). 64 is generous for a real
+# meter: the documented set is a handful of codes.
+MAX_RAW_OBIS_ENTITIES = 64
+
 DEFAULT_PASSIVE = True        # prefer passive data whenever the keys are present
 # Hard ceiling on how long the broadcast may keep us off the GATT link, counted
 # from the last *successful* session, whatever the advertisements look like.
