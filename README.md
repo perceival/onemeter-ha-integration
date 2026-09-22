@@ -227,10 +227,11 @@ for the full step-by-step procedure, including how to wire up SWD,
 how to run OpenOCD, and how to recover if the defaults don't match
 your firmware revision.
 
-> **⚠️ Untested:** the script has been derived from analysis of one
-> specific device's firmware but **has not yet been run end-to-end
-> against a live device.** If you try it, please file an issue with
-> your results — both successes and failures are useful data.
+> **Validated on real hardware.** The script and its default offsets
+> have been confirmed end-to-end on a real device (FT232H + OpenOCD
+> 0.12). Other firmware revisions may still differ; if something
+> doesn't match, please file an issue with your results — both
+> successes and failures are useful data.
 
 In short, the procedure is:
 
@@ -239,9 +240,13 @@ In short, the procedure is:
    Probe — anything OpenOCD supports).
 3. Start OpenOCD with an appropriate `target/nrf51.cfg`.
 4. Run `python tools/extract_credentials.py`. The script halts the
-   CPU, reads the BLE MAC + mobKey + IV using a CRP-bypass gadget,
-   resumes the CPU, and prints the values — plus the device's "slot 2"
-   key/IV pair (flash offsets `0x3f044`/`0x3f054`).
+   CPU, reads the BLE MAC from FICR (a wiring sanity check — it is
+   *not* necessarily the address the device advertises, see the
+   guide), then reads the mobKey + IV, plus the device's "slot 2"
+   key/IV pair (flash offsets `0x3f044`/`0x3f054`), via the CRP-bypass
+   gadget. It leaves the CPU **halted** on purpose (resuming from a
+   hijacked PC runs garbage), so power-cycle the device when it
+   finishes.
 5. Paste the BLE MAC, mobKey, and IV into the integration's config
    flow. The slot-2 pair is optional: paste it into the passive
    reading fields to enable

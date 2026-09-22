@@ -1,0 +1,11 @@
+# Private test inputs that must never be published.
+#
+# Real captured device data (metered consumption, clock values) from the
+# author's own installation. The published tests assert *relationships* over
+# whatever is here and skip when the directory is empty, so a fresh clone
+# still runs the full suite while this machine keeps the genuine regression
+# data.
+#
+# Only .gitignore itself is tracked; everything else in here is ignored.
+*
+!.gitignore

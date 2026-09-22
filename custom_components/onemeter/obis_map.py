@@ -98,10 +98,9 @@ _ENERGY_TARIFF_3 = ObisDescriptor(
 # nets import+export together, which is the *wrong* input for HA's
 # Energy dashboard ("Grid consumption" wants import only, "Return to
 # grid" wants export only) — these two registers are the correct ones
-# to use there. Confirmed present (non-zero, real) on an Apator NORAX 3
-# even without solar: `1.8.0=<redacted>`, `2.8.0=<redacted>` (a small non-zero
-# export reading with no PV attached is a normal meter-calibration
-# artifact, not evidence of generation).
+# to use there. Confirmed present and non-zero on a real Apator NORAX 3
+# even without solar — a small non-zero export reading with no PV attached
+# is a normal meter-calibration artifact, not evidence of generation.
 _ENERGY_IMPORT_TOTAL = ObisDescriptor(
     obis=bytes([0, 1, 8, 0]),
     key="energy_import_total",

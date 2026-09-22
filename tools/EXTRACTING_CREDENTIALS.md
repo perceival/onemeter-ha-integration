@@ -1,16 +1,17 @@
 # Extracting credentials from your OneMeter device
 
-> **⚠️ Untested**
+> **Validated on real hardware**
 >
-> This guide and the helper script `extract_credentials.py` have been
-> derived from reverse-engineering one specific OneMeter device's
-> firmware, but **the script itself hasn't been run end-to-end against
-> a live device yet** (the SWD rig was disconnected when the script
-> was written). The flash offsets and bypass-gadget address below are
-> believed correct for the analysed firmware but may differ on yours.
-> If something doesn't match, please open an issue on the repository
-> with the device's firmware version, what you got back, and what you
-> expected.
+> The flash offsets and bypass-gadget address below were derived by
+> reverse-engineering one OneMeter device's firmware, and have since
+> been confirmed end-to-end on a real device with an FT232H + OpenOCD
+> 0.12 rig. There is one known wrinkle: at least one firmware revision
+> advertises with an address stored in its own config block rather than
+> the FICR one, so a FICR/sticker mismatch does **not** by itself mean a
+> bad read — see [step 3](#3-run-the-extractor). Other firmware
+> revisions may still differ in the offsets or gadget. If something
+> doesn't match, please open an issue on the repository with the
+> device's firmware version, what you got back, and what you expected.
 
 This integration needs two 16-byte secrets from your OneMeter device:
 
@@ -177,7 +178,11 @@ The script:
   left it) rather than from the app, which runs garbage and can fault the
   device. See the power-cycle note below.
 
-A successful run prints something like:
+A successful run prints something like the following. The key bytes in
+this example are **patterned placeholders, not real credentials** — your
+run's output will differ, and no example in this guide should ever be
+copied into a config flow. (The BLE MAC and device ID shown are the
+maintainer's own device, already published upstream; the keys are not.)
 
 ```
 ================================================================
@@ -186,8 +191,8 @@ OneMeter device credentials
 BLE MAC      : E5:01:36:A0:68:63
 DEVICE ID    : 4F03BD65...
 
-mobKey (hex) : f2bec5110dc2097b7623a58524157bd2
-IV     (hex) : 43dff996f127364ff58015b0671198dd
+mobKey (hex) : 00112233445566778899aabbccddeeff
+IV     (hex) : ffeeddccbbaa99887766554433221100
 
 Optional — enables passive (broadcast) reading:
 passive key  : 0f1e2d3c4b5a69788796a5b4c3d2e1f0
@@ -263,6 +268,7 @@ Exit codes:
 | 2 | Could not connect to OpenOCD. |
 | 3 | FICR read failed — wiring problem. |
 | 4 | Bypass-gadget read failed — gadget PC/register probably wrong for this firmware. |
+| 5 | Could not write `--output` — the path is a symlink, has another hard link, is not a regular file, or is not writable. Nothing usable was written (refusals happen before truncation; a short write or a late error is reported, not hidden). |
 
 ---
 
@@ -394,6 +400,19 @@ If you suspect a mobKey leaked, the only way to invalidate it is to
 factory-reset the device (which on stock firmware requires the
 OneMeter cloud being alive — for which this whole integration exists
 to work around). There is no host-side mobKey rotation.
+
+Two habits worth keeping:
+
+- **Delete the `--output` file when you are done with it.** It is
+  written mode 0600, but it is still a plaintext copy of your device's
+  keys sitting on disk (and on filesystems that do not support
+  permissions — FAT/exFAT, CIFS/SMB shares — the tool warns that it
+  could not make it private at all).
+- **Keep OpenOCD's telnet port on loopback.** It is unauthenticated
+  cleartext, and anyone who can reach it can issue target commands —
+  including flash writes. The script's `--host` default is
+  `127.0.0.1` for that reason; don't point it at a remote debugger or
+  expose port 4444.
 
 ---
 

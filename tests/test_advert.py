@@ -1,4 +1,6 @@
 """Advertisement (passive broadcast) decoder tests."""
+import json
+import pathlib
 import struct
 
 import pytest
@@ -13,18 +15,26 @@ PINNED_CLOCK = 1700000000
 PINNED_RECORDS = ((0x0C, 1234567), (0x11, 42), (0x99, 0xDEADBEEF))
 PINNED_QUARTER_HOUR = 89
 
-# Real advertisements captured 2026-09-19 from a device with a real meter
-# attached. Only the *decrypted* plaintexts are kept in this repository; the
-# device's slot-2 key deliberately is not.
-CAPTURE_A = bytes.fromhex("00000000000000000000000000000000000000")
-CAPTURE_B = bytes.fromhex("00000000000000000000000000000000000000")
-CAPTURE_CLOCK = 1700000000
-
 
 def _build_plaintext(clock: int, records: tuple[tuple[int, int], ...]) -> bytes:
     return struct.pack("<I", clock) + b"".join(
         bytes([tag]) + struct.pack("<I", value) for tag, value in records
     )
+
+
+# Synthetic captures shaped exactly like the real ones: a clock word plus three
+# tagged 5-byte records, including the mirrored (total, tariff) pairs a OneMeter
+# reports for the same register. None of the values comes from a real capture:
+# the published repository should not carry a household's metered consumption. The
+# genuine captured plaintexts live in tests/private/captures.json (gitignored)
+# and are exercised by test_real_capture_plaintexts_when_available below.
+CAPTURE_CLOCK = 1750000000
+CAPTURE_A = _build_plaintext(
+    CAPTURE_CLOCK, ((0x0C, 12345678), (0x11, 42), (0x16, 210000))
+)
+CAPTURE_B = _build_plaintext(
+    CAPTURE_CLOCK, ((0x1B, 1120000), (0x0D, 12345678), (0x12, 42))
+)
 
 
 def _encrypt_advert(key: bytes, iv: bytes, plaintext: bytes, quarter_hour: int = 1) -> bytes:
@@ -129,15 +139,15 @@ def test_wire_quarter_hour_byte_is_ignored(test_key, test_iv):
     assert result.quarter_hour == advert.quarter_hour_of(1234567890)
 
 
-def test_parse_advertisement_real_capture_plaintext():
-    """A real 2026-09-19 plaintext: clock plus three tagged records."""
+def test_parse_advertisement_fixture_plaintext():
+    """Clock plus three tagged records, in the shape a real capture has."""
     result = advert.parse_advertisement(CAPTURE_A)
     assert result is not None
     assert result.clock == CAPTURE_CLOCK
     assert [(r.tag, r.value) for r in result.records] == [
-        (0x0C, 2222222),   # 0.1.8.0 energy import, raw units of 10 Wh
-        (0x11, 114),       # 0.2.8.0 energy export
-        (0x16, 333333),    # 0.3.8.0 tariff 2
+        (0x0C, 12345678),  # 0.1.8.0 energy import, raw units of 10 Wh
+        (0x11, 42),        # 0.2.8.0 energy export
+        (0x16, 210000),    # 0.3.8.0 tariff 2
     ]
 
 
@@ -149,9 +159,9 @@ def test_parse_advertisement_mirrored_pair_carries_same_import():
     result = advert.parse_advertisement(CAPTURE_B)
     assert result is not None
     assert [(r.tag, r.value) for r in result.records] == [
-        (0x1B, 4444444),   # 0.4.8.0 tariff 3
-        (0x0D, 2222222),   # 0.1.8.0 again, under the paired tag
-        (0x12, 114),       # 0.2.8.0 again
+        (0x1B, 1120000),   # 0.4.8.0 tariff 3
+        (0x0D, 12345678),  # 0.1.8.0 again, under the paired tag
+        (0x12, 42),        # 0.2.8.0 again
     ]
     paired = result.record(0x0D)
     assert paired is not None
@@ -166,10 +176,41 @@ def test_obis_values_maps_identified_tags():
     result = advert.parse_advertisement(CAPTURE_A)
     assert result is not None
     assert result.obis_values() == {
-        bytes([0, 1, 8, 0]): 2222222,
-        bytes([0, 2, 8, 0]): 114,
-        bytes([0, 3, 8, 0]): 333333,
+        bytes([0, 1, 8, 0]): 12345678,
+        bytes([0, 2, 8, 0]): 42,
+        bytes([0, 3, 8, 0]): 210000,
     }
+
+
+_PRIVATE_CAPTURES = pathlib.Path(__file__).resolve().parent / "private" / "captures.json"
+
+
+def test_real_capture_plaintexts_when_available():
+    """Cross-check against the genuine captured plaintexts where they exist.
+
+    Those bytes are a real household's meter readings, so they are deliberately
+    not part of the published fixtures — but they are the strongest regression
+    data in this project (they came off a device on a live meter), so this test
+    runs them whenever ``tests/private/captures.json`` is present (see that
+    directory's .gitignore) and skips elsewhere. Only *relationships* are
+    asserted, never the captured numbers, so nothing private is duplicated into
+    this file.
+    """
+    if not _PRIVATE_CAPTURES.exists():
+        pytest.skip("no tests/private/captures.json on this machine")
+    data = json.loads(_PRIVATE_CAPTURES.read_text())
+    cap_a = advert.parse_advertisement(bytes.fromhex(data["advert_a"]))
+    cap_b = advert.parse_advertisement(bytes.fromhex(data["advert_b"]))
+    assert cap_a is not None and cap_b is not None
+    assert cap_a.clock == data["clock"]
+
+    values = cap_a.obis_values()
+    assert bytes([0, 1, 8, 0]) in values and bytes([0, 2, 8, 0]) in values
+    assert values[bytes([0, 2, 8, 0])] < values[bytes([0, 1, 8, 0])]  # export < import
+    paired = cap_b.record(0x0D)  # the mirrored tag of 0x0C
+    assert paired is not None
+    assert paired.value == values[bytes([0, 1, 8, 0])]
+    assert paired.obis == bytes([0, 1, 8, 0])
 
 
 def test_obis_values_drops_sentinel_and_unmapped_tags():

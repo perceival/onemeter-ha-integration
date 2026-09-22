@@ -25,6 +25,13 @@ diagnostics don't get that for free.
 
 Usage:
     python3 tools/dump_last_obis.py AA:BB:CC:DD:EE:FF <mobkey_hex> <iv_hex>
+
+SECURITY: passing the mobKey/IV as arguments puts them in your shell
+history and in `ps` output, where any other local user can read them.
+For a one-off on your own machine that is often acceptable; if it is
+not, run the command with history disabled (`set +o history` in bash,
+`setopt histignorespace` + a leading space in zsh) and consider a
+wrapper that reads the values from a file or the environment instead.
 """
 from __future__ import annotations
 

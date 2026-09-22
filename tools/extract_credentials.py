@@ -6,12 +6,15 @@ flash. This script reads them via OpenOCD + the nRF51 code-readout-
 protection (CRP) bypass gadget, then prints the values to paste into the
 HA integration's config flow.
 
-# WARNING — UNTESTED
+# Validated on real hardware
 
-This script has been derived from analysis but **has not yet been run
-end-to-end against a live OneMeter device.** The flash offsets, the
-bypass-gadget PC, and the gadget register mapping below match the
-specific firmware we analysed; other firmware revisions may differ.
+The flash offsets, the bypass-gadget PC, and the gadget register mapping
+below match the specific firmware we analysed, and have since been
+confirmed end-to-end on a real device with an FT232H + OpenOCD 0.12 rig.
+Other firmware revisions may still differ — one known variant advertises
+with an address from its own config block rather than the FICR one, so a
+FICR/sticker mismatch is not by itself a wiring problem (see
+`EXTRACTING_CREDENTIALS.md`).
 
 If it doesn't work for your device, see the troubleshooting section in
 `EXTRACTING_CREDENTIALS.md` — in particular, the manual "find the load
@@ -59,6 +62,7 @@ import json
 import os
 import re
 import socket
+import stat
 import sys
 import time
 from pathlib import Path
@@ -66,6 +70,9 @@ from pathlib import Path
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 4444
 SOCK_TIMEOUT_S = 5.0
+# Replies are a handful of lines; cap the read buffer so a wedged or hostile
+# peer cannot make us allocate without bound.
+MAX_REPLY_BYTES = 256 * 1024
 PROMPT = b"> "
 
 # nRF51822 flash offsets (per our analysed firmware)
@@ -151,6 +158,78 @@ def _should_resume(*, pc_hijacked: bool, no_resume_flag: bool) -> bool:
     return not pc_hijacked and not no_resume_flag
 
 
+def _report_gadget_failure(exc: Exception) -> None:
+    """Explain a failed bypass-gadget read on stderr (used for both key reads)."""
+    print(f"ERROR: bypass-gadget read failed: {exc}", file=sys.stderr)
+    print("Most likely the gadget PC or register is wrong for your firmware.",
+          file=sys.stderr)
+    print("See EXTRACTING_CREDENTIALS.md → 'Finding the bypass gadget manually'.",
+          file=sys.stderr)
+
+
+def write_output_file(path: Path, payload: str) -> tuple[int, str]:
+    """Write the credentials JSON to `path` at mode 0600.
+
+    Returns ``(exit_code, warning)``. Refuses with exit 5 — writing nothing usable
+    — when the path is a symlink (`O_NOFOLLOW`), already has more than one hard
+    link, is not a regular file (a planted FIFO or device node), or cannot be
+    opened. The file is only truncated *after* those checks pass, so a refusal
+    cannot destroy what was already there; a short write, or an error after the
+    truncate, is also reported as 5 rather than as success.
+
+    `warning` is non-empty when the file could not actually be made private: on
+    filesystems that ignore chmod (FAT/exFAT, CIFS/SMB) the request is silently
+    dropped, so the mode is read back from the descriptor rather than assumed.
+    Split out of `main()` so those refusal paths are testable without a device.
+    """
+    try:
+        # O_NONBLOCK so a FIFO planted at the path (which O_NOFOLLOW does not
+        # refuse) fails to open instead of blocking forever with the target left
+        # halted. It has no effect on writes to a regular file.
+        fd = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600
+        )
+    except OSError as exc:
+        print(f"ERROR: cannot write --output {str(path)!r}: {exc}", file=sys.stderr)
+        print("The path may be a symlink, a directory, or not writable.",
+              file=sys.stderr)
+        return 5, ""
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            print(f"ERROR: {str(path)!r} is not a regular file — refusing to "
+                  f"write credentials there.", file=sys.stderr)
+            return 5, ""
+        if st.st_nlink > 1:
+            print(f"ERROR: {str(path)!r} has {st.st_nlink} hard links — refusing "
+                  f"to write credentials into a file that another name already "
+                  f"refers to.", file=sys.stderr)
+            return 5, ""
+        os.fchmod(fd, 0o600)
+        os.ftruncate(fd, 0)
+        written = os.write(fd, payload.encode())
+        if written != len(payload):
+            print(f"ERROR: short write to {str(path)!r}: {written} of "
+                  f"{len(payload)} bytes — the file is incomplete.",
+                  file=sys.stderr)
+            return 5, ""
+        mode = os.fstat(fd).st_mode & 0o777
+    except OSError as exc:
+        print(f"ERROR: cannot write --output {str(path)!r}: {exc}", file=sys.stderr)
+        print("Nothing usable was written there.", file=sys.stderr)
+        return 5, ""
+    finally:
+        os.close(fd)
+    if mode == 0o600:
+        print(f"wrote JSON to {path} (mode 0600)", file=sys.stderr)
+        return 0, ""
+    return 0, (
+        f"{str(path)!r} is mode {mode:04o}, not 0600 — this filesystem may not "
+        f"support permissions. The file holds credentials; delete it when you "
+        f"are done."
+    )
+
+
 def _connect(host: str, port: int) -> socket.socket:
     sock = socket.create_connection((host, port), timeout=SOCK_TIMEOUT_S)
     sock.settimeout(SOCK_TIMEOUT_S)
@@ -174,15 +253,31 @@ def _drain_until_prompt(sock: socket.socket) -> bytes:
         if not chunk:
             raise OpenOCDError("openocd connection closed unexpectedly")
         buf += chunk
+        if len(buf) > MAX_REPLY_BYTES:
+            # A reply is a few lines. Anything past this is a broken or hostile
+            # peer on the telnet port, and the buffer grows O(n^2) unbounded.
+            raise OpenOCDError(
+                f"openocd reply exceeded {MAX_REPLY_BYTES} bytes without a prompt"
+            )
     return buf
 
 
 def _tncmd(sock: socket.socket, cmd: str) -> str:
     sock.sendall((cmd + "\n").encode("ascii"))
-    return _drain_until_prompt(sock).decode("ascii", errors="strict")
-
-
-_HEX_RE = re.compile(r"0x[0-9a-fA-F]+")
+    # Decode strictly, but turn the failure into an OpenOCDError so the retry
+    # loop catches it: a bit-flip on the FTDI/SWD link (the most common cause of
+    # unreliable reads on this rig) puts a byte above 0x7F in the reply, and a
+    # bare UnicodeDecodeError is *not* an OpenOCDError, so it would escape every
+    # handler as a traceback instead of a retried read.
+    #
+    # Deliberately NOT `errors="replace"`: substituting U+FFFD inside a hex
+    # literal *truncates* it, so `0x0003f0<bad>5c` parses as `0x0003f0` — and two
+    # such reads would agree on the same wrong word, defeating the whole point of
+    # VERIFY_READS. Raising keeps the read retryable and never silently wrong.
+    try:
+        return _drain_until_prompt(sock).decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise OpenOCDError(f"non-ascii byte in openocd reply: {exc}") from exc
 
 
 def read_word_direct(sock: socket.socket, addr: int) -> int:
@@ -258,15 +353,25 @@ def read_word_via_gadget(
     _wait_halted(sock)
     resp = _tncmd(sock, f"reg {gadget_reg}")
     # OpenOCD may interleave unrelated lines (e.g. "SWD DPIDR 0x...") after a
-    # reset; only accept the value from the "<reg> (/32): 0x..." line itself.
+    # reset; only accept the value from this register's own "<reg> (/N): 0x..."
+    # line. The left side is a lookbehind rather than an anchor because a stray
+    # NUL can precede the name on the same line; it stops `sp` matching `msp`.
+    # `\d+` (not a hardcoded `32`) keeps the --gadget-reg escape hatch usable on
+    # other firmware revisions, where the register may be 64- or fewer-bit.
     matches = re.findall(
-        rf"{re.escape(gadget_reg)}\s*\(/32\):\s*(0x[0-9a-fA-F]+)", resp
+        rf"(?<![A-Za-z0-9_]){re.escape(gadget_reg)}\s*\(/\d+\):\s*(0x[0-9a-fA-F]+)", resp
     )
     if len(matches) != 1:
         raise OpenOCDError(
             f"expected one hex value reading {gadget_reg}, got {matches} from {resp!r}"
         )
-    return int(matches[0], 16)
+    try:
+        return int(matches[0], 16)
+    except ValueError as exc:
+        # Python refuses to parse a digit run past int_max_str_digits, and a
+        # hostile reply can contain one. It is not worth distinguishing from any
+        # other unreadable value — both are retried as an OpenOCDError.
+        raise OpenOCDError(f"unparseable register value {matches[0][:32]!r}") from exc
 
 
 def read_word_verified(
@@ -334,7 +439,11 @@ def main() -> int:
         description="Extract OneMeter mobKey + IV from device flash via OpenOCD + SWD."
     )
     p.add_argument("--host", default=DEFAULT_HOST,
-                   help=f"OpenOCD telnet host (default: {DEFAULT_HOST})")
+                   help=f"OpenOCD telnet host (default: {DEFAULT_HOST}). Note that "
+                        "OpenOCD's telnet port is unauthenticated cleartext and "
+                        "lets whoever can reach it issue arbitrary target "
+                        "commands, including flash writes: keep it on loopback "
+                        "and never expose port 4444.")
     p.add_argument("--port", type=int, default=DEFAULT_PORT,
                    help=f"OpenOCD telnet port (default: {DEFAULT_PORT})")
     p.add_argument("--gadget-pc", type=lambda x: int(x, 0), default=DEFAULT_GADGET_PC,
@@ -370,17 +479,30 @@ def main() -> int:
     print(f"connecting to OpenOCD at {args.host}:{args.port}…", file=sys.stderr)
     try:
         sock = _connect(args.host, args.port)
+    except OpenOCDError as exc:
+        # _connect's handshake raises this (e.g. a non-ASCII byte in the very
+        # first reply now that the decode is strict); without this handler it
+        # escaped as a traceback and exit 1, which the docs define as
+        # "success, but warnings printed".
+        print(f"ERROR: cannot connect to OpenOCD: {exc}", file=sys.stderr)
+        return 2
     except (ConnectionError, socket.error) as exc:
         print(f"ERROR: cannot connect to OpenOCD: {exc}", file=sys.stderr)
         print("Is `openocd` running and listening on the telnet port?", file=sys.stderr)
         return 2
 
     try:
-        if not args.skip_reset:
-            print("halting target via SWD (reset halt)…", file=sys.stderr)
-            _tncmd(sock, "reset halt")
-        else:
-            _tncmd(sock, "halt")
+        try:
+            if not args.skip_reset:
+                print("halting target via SWD (reset halt)…", file=sys.stderr)
+                _tncmd(sock, "reset halt")
+            else:
+                _tncmd(sock, "halt")
+        except OpenOCDError as exc:
+            print(f"ERROR: cannot halt the target: {exc}", file=sys.stderr)
+            print("Is the SWD wiring connected and the target powered?",
+                  file=sys.stderr)
+            return 2
 
         # FICR first (unprotected — sanity check we're talking to the chip)
         print("reading FICR (BLE MAC + DEVICEID)…", file=sys.stderr)
@@ -401,17 +523,22 @@ def main() -> int:
                 sock, args.mobkey_offset, 16, args.gadget_pc, args.gadget_reg
             )
         except OpenOCDError as exc:
-            print(f"ERROR: bypass-gadget read failed: {exc}", file=sys.stderr)
-            print("Most likely the gadget PC or register is wrong for your firmware.",
-                  file=sys.stderr)
-            print("See EXTRACTING_CREDENTIALS.md → 'Finding the bypass gadget manually'.",
-                  file=sys.stderr)
+            _report_gadget_failure(exc)
             return 4
 
         print(f"reading IV (16 B @ 0x{args.iv_offset:08x})…", file=sys.stderr)
-        iv = read_block_via_gadget(
-            sock, args.iv_offset, 16, args.gadget_pc, args.gadget_reg
-        )
+        try:
+            iv = read_block_via_gadget(
+                sock, args.iv_offset, 16, args.gadget_pc, args.gadget_reg
+            )
+        except OpenOCDError as exc:
+            # This read was unwrapped until now: a failure here died with a raw
+            # traceback and exit 1 — which the docs define as "success, but
+            # warnings printed" — while printing no credentials at all. Without
+            # the IV nothing usable comes out, so it takes the same path as the
+            # mobKey failure above.
+            _report_gadget_failure(exc)
+            return 4
 
         # The broadcast pair lives in the same page. Read it with the same
         # gadget, but treat a failure as non-fatal: the GATT credentials above
@@ -513,6 +640,20 @@ def main() -> int:
             "advisories": advisories,
         }
 
+        if args.output:
+            # Write the file *before* printing anything: a refusal must return
+            # before any output a caller could read as success, and appending the
+            # file warning here — while `result` still references this same list —
+            # is what keeps `--json`'s "warnings" complete. (It used to be
+            # appended after the JSON had already been printed, so a `--json`
+            # consumer saw an empty list while the process exited 1.)
+            code, warn = write_output_file(args.output, json.dumps(result, indent=2))
+            if code:
+                return code
+            if warn:
+                warnings.append(warn)
+                print(f"WARNING: {warn}", file=sys.stderr)
+
         if args.json:
             print(json.dumps(result, indent=2))
         else:
@@ -548,25 +689,6 @@ def main() -> int:
             print("passive key/IV fields. These bytes are sensitive — treat")
             print("them like a password.")
             print()
-
-        if args.output:
-            # These are credentials, so the file must not be group/world
-            # readable. O_CREAT applies its mode only when the file is *created*,
-            # so an existing file (e.g. one written 0644 by an older version of
-            # this tool) has to be re-permissioned explicitly — and the message
-            # reports the mode actually in effect, not the one requested.
-            # O_NOFOLLOW refuses to write through a symlink planted at the path.
-            payload = json.dumps(result, indent=2)
-            fd = os.open(
-                args.output,
-                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
-                0o600,
-            )
-            with os.fdopen(fd, "w") as fh:
-                os.fchmod(fd, 0o600)
-                fh.write(payload)
-            mode = os.stat(args.output).st_mode & 0o777
-            print(f"wrote JSON to {args.output} (mode {mode:04o})", file=sys.stderr)
 
         if warnings:
             return 1

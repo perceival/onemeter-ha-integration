@@ -1,4 +1,7 @@
 """Decoder unit tests."""
+import json
+import pathlib
+
 import pytest
 from onemeter.protocol import decode
 
@@ -62,45 +65,46 @@ def test_parse_last_obis_empty():
     assert decode.parse_last_obis(b"") == []
 
 
-def test_parse_last_obis_real_device_capture():
-    """Full cmd 0x21 payload captured live from a device with a real
-    meter attached (Apator NORAX 3), 2026-09-17 — the first time this
-    path was exercised against genuine accumulated data rather than
-    the all-0xFF "no meter" sentinel devices without a meter return.
+_PRIVATE_CAPTURES = pathlib.Path(__file__).resolve().parent / "private" / "captures.json"
 
-    Cross-checks below aren't just decode sanity: they're evidence the
-    bytes are real energy-register data, not noise.
+
+def test_parse_last_obis_real_device_capture():
+    """Full cmd 0x21 payload captured live from a device with a real meter
+    attached (Apator NORAX 3) — the first time this path was exercised against
+    genuine accumulated data rather than the all-0xFF "no meter" sentinel that
+    devices without a meter return.
+
+    The payload, and the day it was captured, are private test inputs
+    (``tests/private/captures.json``, gitignored — they carry this household's
+    metered consumption), so this test skips on a fresh clone. The assertions
+    are the cross-checks that make the data meaningful: they hold for any real
+    capture, not just these numbers, and none of the captured values are
+    duplicated into this file.
     """
-    raw = bytes.fromhex(
-        "00000000000000000000000000000000000000000000000000000000000000"
-        "0000000000000000000000000000000000000000000000000000000000000000"
-        "0000000000000000000000000000000000000000000000000000000000000000"
-        "0000000000000000000000000000000000000000000000000000000000000000"
-        "0000000000000000000000000000000000000000000000000000000000000000"
-        "0000000000000000000000000000000000000000000000000000000000000000"
-        "0000000000000000000000000000000000000000000000000000000000000000"
-        "7fff0101133b000000"
-    )
-    entries = decode.parse_last_obis(raw)
+    if not _PRIVATE_CAPTURES.exists():
+        pytest.skip("no tests/private/captures.json on this machine")
+    data = json.loads(_PRIVATE_CAPTURES.read_text())
+    entries = decode.parse_last_obis(bytes.fromhex(data["last_obis_payload"]))
     assert len(entries) == 29
     by_obis = {e.obis: e.value for e in entries}
 
-    # 1.8.0 (active energy import) — no sentinel, plausible household kWh
-    # register (raw units of 10 Wh, per obis_map.py's 0.01 scale factor).
+    # 1.8.0 (active energy import), 2.8.0 (export) and 15.8.0 (their sum): the
+    # sum must equal import + export within rounding, which is the cheapest
+    # proof that these are real energy registers rather than noise (raw units
+    # of 10 Wh, per obis_map.py's 0.01 scale factor).
     e_1_8_0 = by_obis[bytes([0, 1, 8, 0])]
     e_2_8_0 = by_obis[bytes([0, 2, 8, 0])]
     e_15_8_0 = by_obis[bytes([0, 15, 8, 0])]
-    assert e_1_8_0 == 1111111
-    # 15.8.0 (sum active energy) is import + export, within rounding.
     assert abs(e_15_8_0 - (e_1_8_0 + e_2_8_0)) <= 1
 
-    # 255.1.1.4 — device's "last meter read" timestamp (unix seconds).
-    # Captured live on 2026-09-17; decodes to that same day.
+    # 255.1.1.4 — the device's "last meter read" as unix seconds. It has to
+    # decode to the day the payload was captured, which the private file
+    # records; that is what proves the field is a timestamp and not a counter.
     import datetime
 
     ts = by_obis[bytes([0xFF, 1, 1, 4])]
     dt = datetime.datetime.fromtimestamp(ts, tz=datetime.UTC)
-    assert dt.date() == datetime.date(2026, 9, 17)
+    assert dt.date() == datetime.date.fromisoformat(data["last_obis_captured_on"])
 
     # None of these are the 0xFFFFFFFF "no value" sentinel.
     assert all(v != 0xFFFFFFFF for v in by_obis.values())

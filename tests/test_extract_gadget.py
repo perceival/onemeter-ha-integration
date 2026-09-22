@@ -11,6 +11,7 @@ The module is loaded by path because `tools/` is not on the pytest pythonpath �
 it is a standalone script, not part of the integration package.
 """
 import importlib.util
+import os
 import pathlib
 
 import pytest
@@ -26,6 +27,16 @@ HALTED = "     nrf51.cpu  cortex_m  little  swd  halted\n"
 RUNNING = "     nrf51.cpu  cortex_m  little  swd  running\n"
 HEADER = "       TargetName   Type     Endian  TapName  State\n"
 HALTED_WORD = 0x12345678
+
+
+def reg_reply(value: int, reg: str = "r4", width: int = 32) -> str:
+    """A `reg <name>` reply in the shape real OpenOCD prints.
+
+    The parser is anchored on the `<reg> (/N): 0x...` fragment, so a fake reply
+    that is a bare hex value is *easier* than reality and can hide a parsing
+    regression. Every scripted register read goes through this helper.
+    """
+    return f"{reg} (/{width}): 0x{value:08x}\n"
 
 
 class FakeOpenOCD:
@@ -140,7 +151,7 @@ def test_gadget_read_waits_for_the_halt_before_reading_the_register():
     """Regression guard for the 'Could not read register' failure: a `targets`
     poll must appear between `step` and the read-back."""
     sock = FakeOpenOCD(
-        replies={"reg r4": f"r4 (/32): 0x{HALTED_WORD:08x}\n"},
+        replies={"reg r4": reg_reply(HALTED_WORD)},
         running_polls=2,
     )
     value = extract.read_word_via_gadget(sock, 0x3F024, 0x6D4, "r4")
@@ -154,7 +165,7 @@ def test_gadget_read_leaves_pc_marked_hijacked_even_on_success():
     """A *successful* read also leaves PC pointing into the gadget — nothing
     restores the application's execution point — which is why the cleanup path
     must not resume afterwards."""
-    sock = FakeOpenOCD(replies={"reg r4": f"0x{HALTED_WORD:08x}\n"})
+    sock = FakeOpenOCD(replies={"reg r4": reg_reply(HALTED_WORD)})
     extract.read_word_via_gadget(sock, 0x3F024, 0x6D4, "r4")
     assert extract._pc_hijacked is True
 
@@ -166,11 +177,33 @@ def test_gadget_read_raises_on_a_refused_register_read():
     assert extract._pc_hijacked is True
 
 
+def test_gadget_read_ignores_interleaved_output_and_a_stray_nul():
+    """Regression guard for the field failure on OpenOCD 0.12 + FT232H.
+
+    After `reset halt` the reply to `reg r4` carries unrelated lines — an
+    "SWD DPIDR 0x..." line here — and can arrive with a stray NUL before the
+    value. Parsing *every* hex literal in the response therefore saw two values
+    (the DPIDR's and the register's) and aborted the run with "bypass-gadget
+    read failed" on a device whose gadget address and offsets were correct. The
+    parse must read the `r4 (/32):` line only.
+    """
+    sock = FakeOpenOCD(
+        replies={
+            "reg r4": (
+                "SWD DPIDR 0x0bb11477\n"
+                "\x00"
+                f"r4 (/32): 0x{HALTED_WORD:08x}\n"
+            )
+        }
+    )
+    assert extract.read_word_via_gadget(sock, 0x3F024, 0x6D4, "r4") == HALTED_WORD
+
+
 def test_verified_read_retries_a_transient_refusal():
     """A single refusal used to abort the whole 16-byte block (and the run).
     The first attempt fails, the second gets two agreeing reads."""
     sock = FakeOpenOCD(
-        replies={"reg r4": ["Could not read register 'r4'\n", f"0x{HALTED_WORD:08x}\n"]}
+        replies={"reg r4": ["Could not read register 'r4'\n", reg_reply(HALTED_WORD)]}
     )
     assert extract.read_word_verified(sock, 0x3F024, 0x6D4, "r4") == HALTED_WORD
 
@@ -185,14 +218,41 @@ def test_verified_read_rejects_disagreeing_reads():
     """Always-disagreeing reads must fail rather than pick one: the whole point
     of the gadget is that a single read can silently be garbage."""
     sock = FakeOpenOCD(
-        replies={"reg r4": lambda n: "0x00000001\n" if n % 2 else "0x00000002\n"}
+        replies={
+            "reg r4": lambda n: reg_reply(1) if n % 2 else reg_reply(2)
+        }
     )
-    with pytest.raises(extract.OpenOCDError, match="could not get 2 agreeing reads"):
+    # Pin the *reason* it failed. The parse-failure path produces the same
+    # "could not get 2 agreeing reads" sentence (it interpolates last_reads=[] and
+    # the inner error), so matching only that would let this test pass while
+    # exercising the wrong code path — which is exactly what happened between the
+    # regex change and the fixture fix above.
+    with pytest.raises(
+        extract.OpenOCDError, match=r"last reads: \[1, 2\], last error: None"
+    ):
         extract.read_word_verified(sock, 0x3F024, 0x6D4, "r4")
 
 
+def test_gadget_read_ignores_a_superset_register_name_in_a_listing():
+    """`--gadget-reg sp` must not match the `msp`/`psp` lines of a register
+    listing: the parse excludes a name preceded by an identifier character, so
+    only the real `sp` line counts."""
+    sock = FakeOpenOCD(
+        replies={"reg sp": f"msp (/32): 0x00000001\n{reg_reply(HALTED_WORD, 'sp')}"}
+    )
+    assert extract.read_word_via_gadget(sock, 0x3F024, 0x6D4, "sp") == HALTED_WORD
+
+
+def test_gadget_read_parses_a_non_32_bit_register():
+    """`--gadget-reg` is the documented escape hatch for other firmware
+    revisions, where the leaked value may sit in a 64-bit register — so the
+    parse must not hardcode a `(/32)` width."""
+    sock = FakeOpenOCD(replies={"reg d0": reg_reply(HALTED_WORD, "d0", 64)})
+    assert extract.read_word_via_gadget(sock, 0x3F024, 0x6D4, "d0") == HALTED_WORD
+
+
 def test_block_read_returns_little_endian_words():
-    sock = FakeOpenOCD(replies={"reg r4": f"0x{HALTED_WORD:08x}\n"})
+    sock = FakeOpenOCD(replies={"reg r4": reg_reply(HALTED_WORD)})
     blob = extract.read_block_via_gadget(sock, 0x3F024, 8, 0x6D4, "r4")
     assert blob == HALTED_WORD.to_bytes(4, "little") * 2
 
@@ -270,3 +330,104 @@ def test_resume_is_refused_after_a_gadget_read():
 
 def test_resume_flag_is_still_honoured():
     assert extract._should_resume(pc_hijacked=False, no_resume_flag=True) is False
+
+
+# --- the --output write path --------------------------------------------------
+
+
+def test_output_file_is_written_private(tmp_path):
+    path = tmp_path / "creds.json"
+    code, warn = extract.write_output_file(path, "{}")
+    assert (code, warn) == (0, "")
+    assert path.read_text() == "{}"
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_output_file_re_permissions_an_existing_loose_file(tmp_path):
+    """A file left 0644 by an older version must not stay readable."""
+    path = tmp_path / "creds.json"
+    path.write_text("old")
+    path.chmod(0o644)
+    code, _ = extract.write_output_file(path, "new")
+    assert code == 0
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.read_text() == "new"
+
+
+def test_output_file_refuses_a_symlink_without_touching_the_target(tmp_path):
+    target = tmp_path / "real.json"
+    target.write_text("keep me")
+    link = tmp_path / "link.json"
+    link.symlink_to(target)
+    code, _ = extract.write_output_file(link, "{}")
+    assert code == 5
+    assert target.read_text() == "keep me"
+
+
+def test_output_file_refuses_a_hard_link_without_truncating_it(tmp_path):
+    """O_NOFOLLOW does not catch a pre-existing hard link, and the other name's
+    owner would gain a readable copy of the keys — so this refuses, and must do
+    so *before* truncating (an earlier version truncated at open, which would
+    have destroyed the file it was refusing to overwrite)."""
+    original = tmp_path / "a.json"
+    original.write_text("keep me")
+    linked = tmp_path / "b.json"
+    os.link(original, linked)
+    code, _ = extract.write_output_file(linked, "{}")
+    assert code == 5
+    assert original.read_text() == "keep me"
+
+
+def test_drain_until_prompt_gives_up_on_an_endless_reply():
+    """The reply buffer is capped: a wedged or hostile peer on the telnet port
+    must raise rather than grow the buffer without bound."""
+
+    class _NoPromptSock:
+        def sendall(self, _data):  # pragma: no cover - not reached
+            pass
+
+        def recv(self, _n):
+            return b"x" * 4096
+
+        def settimeout(self, _t):  # pragma: no cover - trivial
+            pass
+
+    with pytest.raises(extract.OpenOCDError, match="exceeded"):
+        extract._drain_until_prompt(_NoPromptSock())
+
+
+def test_telnet_decode_failure_is_retried_not_fatal():
+    """A bit-flip on the link must raise OpenOCDError — which the retry loop
+    catches — rather than UnicodeDecodeError, which escapes it. And the bad byte
+    must not be *replaced*: a U+FFFD inside a hex literal would truncate it, so
+    two reads would agree on the same wrong word and VERIFY_READS would pass."""
+
+    class _BadByteSock:
+        def sendall(self, _data):  # pragma: no cover - not reached
+            pass
+
+        def recv(self, _n):
+            return b"r4 (/32): 0x0003f0\xff5c\n> "
+
+        def settimeout(self, _t):  # pragma: no cover - trivial
+            pass
+
+    with pytest.raises(extract.OpenOCDError, match="non-ascii"):
+        extract._tncmd(_BadByteSock(), "reg r4")
+
+
+def test_output_file_refuses_a_fifo(tmp_path):
+    """A FIFO planted at the path must not hang the tool (an earlier version
+    blocked at open forever, with the target left halted)."""
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    code, _ = extract.write_output_file(fifo, "{}")
+    assert code == 5
+
+
+def test_output_file_refuses_a_non_regular_file():
+    """A character device (e.g. /dev/null) is not a place to write credentials,
+    and must be refused cleanly — fchmod on it raises EPERM, which used to
+    escape as a traceback with a misleading exit code."""
+    code, _ = extract.write_output_file(pathlib.Path("/dev/null"), "{}")
+    assert code == 5
