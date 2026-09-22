@@ -31,6 +31,7 @@ from .policy import (
 )
 from .protocol.advert import ADVERT_TAG_OBIS
 from .protocol.decode import SENTINEL_NO_VALUE, format_obis
+from .protocol.obis_labels import label_for
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -544,7 +545,10 @@ class OneMeterRawObisSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity
         super().__init__(coordinator)
         self._obis = obis
         self._attr_unique_id = f"{coordinator.address}_obis_raw_{obis.hex()}"
-        self._attr_name = f"OBIS {format_obis(obis)}"
+        # Codes we have identified get their name in parentheses, so the entity
+        # list reads "OBIS <code> (<label>)" — see protocol/obis_labels.py.
+        label = label_for(obis)
+        self._attr_name = f"OBIS {format_obis(obis)}" + (f" ({label})" if label else "")
         self._attr_device_info = _device_info(coordinator)
 
     @property

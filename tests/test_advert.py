@@ -30,10 +30,10 @@ def _build_plaintext(clock: int, records: tuple[tuple[int, int], ...]) -> bytes:
 # and are exercised by test_real_capture_plaintexts_when_available below.
 CAPTURE_CLOCK = 1750000000
 CAPTURE_A = _build_plaintext(
-    CAPTURE_CLOCK, ((0x0C, 12345678), (0x11, 42), (0x16, 210000))
+    CAPTURE_CLOCK, ((0x0C, 12345678), (0x11, 42), (0x16, 305000))
 )
 CAPTURE_B = _build_plaintext(
-    CAPTURE_CLOCK, ((0x1B, 1120000), (0x0D, 12345678), (0x12, 42))
+    CAPTURE_CLOCK, ((0x1B, 8642000), (0x0D, 12345678), (0x12, 42))
 )
 
 
@@ -147,7 +147,7 @@ def test_parse_advertisement_fixture_plaintext():
     assert [(r.tag, r.value) for r in result.records] == [
         (0x0C, 12345678),  # 0.1.8.0 energy import, raw units of 10 Wh
         (0x11, 42),        # 0.2.8.0 energy export
-        (0x16, 210000),    # 0.3.8.0 tariff 2
+        (0x16, 305000),    # 0.3.8.0 reactive energy, inductive
     ]
 
 
@@ -159,7 +159,7 @@ def test_parse_advertisement_mirrored_pair_carries_same_import():
     result = advert.parse_advertisement(CAPTURE_B)
     assert result is not None
     assert [(r.tag, r.value) for r in result.records] == [
-        (0x1B, 1120000),   # 0.4.8.0 tariff 3
+        (0x1B, 8642000),   # 0.4.8.0 reactive energy, capacitive
         (0x0D, 12345678),  # 0.1.8.0 again, under the paired tag
         (0x12, 42),        # 0.2.8.0 again
     ]
@@ -178,7 +178,7 @@ def test_obis_values_maps_identified_tags():
     assert result.obis_values() == {
         bytes([0, 1, 8, 0]): 12345678,
         bytes([0, 2, 8, 0]): 42,
-        bytes([0, 3, 8, 0]): 210000,
+        bytes([0, 3, 8, 0]): 305000,
     }
 
 

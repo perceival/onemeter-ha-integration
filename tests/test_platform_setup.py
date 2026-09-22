@@ -22,7 +22,10 @@ pytest.importorskip("homeassistant")
 from homeassistant.helpers import entity_registry as er  # noqa: E402
 from onemeter import sensor  # noqa: E402
 from onemeter.coordinator import OneMeterData  # noqa: E402
+from onemeter.obis_map import KNOWN_OBIS  # noqa: E402
+from onemeter.protocol.advert import ADVERT_TAG_OBIS  # noqa: E402
 from onemeter.protocol.decode import ObisEntry  # noqa: E402
+from onemeter.protocol.obis_labels import OBIS_LABELS  # noqa: E402
 
 ADDR = "AA:BB:CC:DD:EE:FF"
 CODE_WITH_VALUE = bytes([0, 3, 8, 0])
@@ -144,3 +147,51 @@ def test_known_codes_never_get_a_raw_twin(monkeypatch):
     known = next(iter(sensor.KNOWN_OBIS))
     coordinator = _Coordinator({known: 5})
     assert _setup(coordinator, _registry(), monkeypatch) == []
+
+
+# --- the name a user actually sees --------------------------------------------
+
+
+def test_a_labelled_code_gets_its_label_in_parentheses(monkeypatch):
+    """The point of the label change, asserted end to end: without this, dropping
+    the suffix would keep every other test green."""
+    labelled = bytes([0, 3, 8, 0])          # in OBIS_LABELS
+    unlabelled = bytes([0, 7, 8, 0])        # not
+    raw = _setup(_Coordinator({labelled: 5, unlabelled: 7}), _registry(), monkeypatch)
+    names = sorted(e.name for e in raw)
+    assert names == [
+        "OBIS 0.3.8.0 (reactive energy, inductive)",
+        "OBIS 0.7.8.0",
+    ]
+
+
+def test_descriptor_sensors_are_not_given_a_label(monkeypatch):
+    """A code with a descriptor keeps its own named sensor. The partition test
+    makes that structural; this pins the user-visible side, which the structural
+    one cannot see: a label leaking onto descriptor sensors would rename sensors
+    users already have."""
+    known = next(iter(sensor.KNOWN_OBIS))
+    _setup(_Coordinator({known: 5}), _registry(), monkeypatch)
+    descriptor_names = {
+        e.name for e in _LAST_ADDED if type(e).__name__ == "OneMeterObisSensor"
+    }
+    assert descriptor_names == {d.name for d in sensor.KNOWN_OBIS.values()}
+
+
+# --- label-map invariants (need KNOWN_OBIS, which imports Home Assistant) ------
+
+
+def test_labels_and_descriptors_are_a_partition():
+    """A code with a descriptor already has a named sensor of its own."""
+    assert not set(OBIS_LABELS) & set(KNOWN_OBIS)
+
+
+def test_every_identified_broadcast_tag_is_sensored_or_labelled():
+    """Guard for the map: adding a tag→OBIS identification without either a
+    descriptor or a label would leave a bare code in the entity list, which is
+    what the labels exist to prevent."""
+    unhandled = {
+        obis for obis in ADVERT_TAG_OBIS.values()
+        if obis not in KNOWN_OBIS and obis not in OBIS_LABELS
+    }
+    assert not unhandled, f"identified but neither sensored nor labelled: {unhandled}"

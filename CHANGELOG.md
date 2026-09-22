@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the poll interval (that interval only ever makes the gap shorter). Enter a
   single `-` in the passive key/IV fields on the reauth form to remove a stored
   pair.
+- Raw OBIS sensors for codes we have identified carry the name in parentheses —
+  `OBIS 0.3.8.0 (reactive energy, inductive)`, `OBIS 255.1.1.11 (vendor-specific
+  field)` — so the disabled-by-default list is readable without cross-referencing
+  a code table. Codes we have *not* identified stay a bare `A.B.C.D`, because a
+  label is a claim about what a register is. (Labelled codes are the two reactive
+  energy registers, per the OBIS C-field convention, and OBIS's vendor-reserved
+  `255.1.1.x` pair.) Note the label is part of the entity name, so a newly created
+  entity's id includes it.
 - `sensor.<name>_cached_registers` — diagnostic entity listing every OBIS
   register the device has reported: the state is how many there are, and the
   attributes map each `A.B.C.D` code to its raw value, including codes that

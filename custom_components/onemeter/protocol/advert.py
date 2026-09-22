@@ -67,8 +67,8 @@ ADVERT_TAG_OBIS: dict[int, bytes] = {
     0x0D: bytes([0, 1, 8, 0]),      # 0.1.8.0  mirrored pair member
     0x11: bytes([0, 2, 8, 0]),      # 0.2.8.0  energy export total
     0x12: bytes([0, 2, 8, 0]),      # 0.2.8.0  mirrored pair member
-    0x16: bytes([0, 3, 8, 0]),      # 0.3.8.0  tariff 2
-    0x1B: bytes([0, 4, 8, 0]),      # 0.4.8.0  tariff 3
+    0x16: bytes([0, 3, 8, 0]),      # 0.3.8.0  reactive energy, inductive
+    0x1B: bytes([0, 4, 8, 0]),      # 0.4.8.0  reactive energy, capacitive
     0x56: bytes([0xFF, 1, 1, 11]),  # 255.1.1.11
     0x57: bytes([0xFF, 1, 1, 14]),  # 255.1.1.14
 }

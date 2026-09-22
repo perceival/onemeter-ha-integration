@@ -47,7 +47,7 @@ your meter's registers" section below.
 | `sensor.<name>_advertisements_decoded` | Advertisements from this device that decoded successfully. |
 | `sensor.<name>_advertisements_undecodable` | Advertisements from this device that failed to decode. Should stay at 0; a rising count means the broadcast changed shape or is being corrupted. (Other units never reach this handler — the callback filters on your device's address.) |
 | `sensor.<name>_cached_registers` | Diagnostic: state is how many OBIS registers the device has reported, attributes map every one of them (`A.B.C.D` → raw value) including codes that have no sensor of their own. The quickest way to identify what a meter exposes. Note this is readable by any Home Assistant user, not just admins — unlike the diagnostics download. |
-| `sensor.<name>_obis_<A>_<B>_<C>_<D>` | One sensor per discovered OBIS register that has no sensor of its own and that the device holds a reading for — the raw device value, with no invented scale. **Disabled by default**; enable the ones you want under *Settings → Devices & Services → Entities*. |
+| `sensor.<name>_obis_<A>_<B>_<C>_<D>` | One sensor per discovered OBIS register that has no sensor of its own and that the device holds a reading for — the raw device value, with no invented scale. Identified codes carry their name in parentheses (e.g. `OBIS 0.3.8.0 (reactive energy, inductive)`); the rest stay bare codes. Since Home Assistant derives a **new** entity's id from its name, a labelled one includes the label (`..._obis_0_3_8_0_reactive_energy_inductive`) — entities created before a label existed keep the id they were created with. **Disabled by default**; enable the ones you want under *Settings → Devices & Services → Entities*. |
 | `button.<name>_poll_now` | Triggers an immediate session — refresh all sensors right now, including a brief listen for live meter pushes. |
 | `button.<name>_auto_detect_meter` | Asks the device to probe the optical port (`cmd 0x19`). Disabled until the device has reported successful meter reads at least once. |
 
@@ -289,9 +289,10 @@ re-enter them.
 Passive reading is deliberately partial:
 
 - **What the broadcast carries:** three tagged register records plus the
-  device's own clock. The energy registers (`0.1.8.0`, `0.2.8.0`, `0.3.8.0`,
-  `0.4.8.0`) and two vendor counters are identified so far. A few tags seen on
-  real hardware still have no OBIS mapping — those are kept raw in the
+  device's own clock. Four energy registers are identified so far — active
+  import and export (`0.1.8.0`, `0.2.8.0`) and reactive inductive and
+  capacitive (`0.3.8.0`, `0.4.8.0`) — plus two vendor counters. A few tags seen
+  on real hardware still have no OBIS mapping — those are kept raw in the
   [diagnostics](#diagnostics) dump and are not turned into entities.
 - **What it does not carry:** battery voltage, comm stats, identity, FS
   params, and most of the 29-register cached-OBIS set. Those still require a
