@@ -132,8 +132,8 @@ _ENERGY_EXPORT_TOTAL = ObisDescriptor(
 # `0.15.7.0` is the instantaneous absolute active power (|+P|+|-P|),
 # sampled by the device at each meter readout (every quarter hour on the
 # reference meter), so it is a snapshot, not a live reading. Scale 0.01 kW
-# assumed by analogy with the 0.01 kWh energy registers (a raw value → kW
-# matched an a plausible reading); verify against the meter display.
+# assumed by analogy with the 0.01 kWh energy registers; verify against the
+# meter's own display before trusting the value.
 _POWER_TOTAL = ObisDescriptor(
     obis=bytes([0, 15, 7, 0]),
     key="power_total",
