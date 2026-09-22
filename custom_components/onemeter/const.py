@@ -34,6 +34,18 @@ CONF_METER_PROTOCOL = "meter_protocol"
 # not real production data — see obis_map.py.
 CONF_PROSUMER = "is_prosumer"
 
+# Optional slot-2 credentials for passive (advertisement) reading. The
+# broadcast channel is encrypted with a *different* AES key from the GATT
+# session protocol: the device's "slot 2" pair, stored immediately after
+# mobKey/IV in the same flash page and read by the same SWD extraction tool
+# (tools/extract_credentials.py). Leaving them blank simply means passive
+# reading is unavailable and every read goes over GATT, as before.
+CONF_PASSIVE_KEY = "passive_key"
+CONF_PASSIVE_IV = "passive_iv"
+# Options-flow switch that stops *preferring* passive data without having to
+# forget the keys — useful to A/B the two paths when diagnosing.
+CONF_PASSIVE = "passive_reading"
+
 # Sentinel for "don't send cmd 0x14 to the device — leave its setting as is".
 # Stored as a string in the options because voluptuous-serialize doesn't
 # round-trip None cleanly through the frontend.
@@ -42,6 +54,34 @@ METER_PROTOCOL_UNCHANGED = "unchanged"
 DEFAULT_POLL_INTERVAL_S = 3600   # 1 hour
 MIN_POLL_INTERVAL_S = 300        # 5 min — below this, battery life suffers significantly
 MAX_POLL_INTERVAL_S = 21600      # 6 h
+
+# --- Passive-first (advertisement reading) policy ---
+#
+# While advertisements are being decoded successfully the integration does not
+# connect at all: the device broadcasts its energy registers on its own
+# schedule, so there is nothing to gain from a connect/login/drain cycle, and
+# skipping it is what buys the battery life. If no *readable* advertisement
+# arrives for PASSIVE_FALLBACK_S, one active session runs and refreshes
+# everything the broadcast does not carry (battery, comm stats, identity, FS
+# params, the full cached-OBIS set) — which is also what re-arms the device's
+# broadcast, so the two paths sustain each other.
+PASSIVE_FALLBACK_S = 1800.0   # 30 min without a decodable data advert → one active session
+PASSIVE_WAIT_S = 60.0         # sleep slice while passive; short enough to notice a manual poll
+DEFAULT_PASSIVE = True        # prefer passive data whenever the keys are present
+# Hard ceiling on how long the broadcast may keep us off the GATT link, counted
+# from the last *successful* session, whatever the advertisements look like.
+# Without it, radio input could suppress the active path indefinitely: a
+# captured advertisement re-verifies forever because the CCM nonce is the
+# device's static IV, so anyone in range can replay one every 30 minutes. It
+# also bounds how stale the data the broadcast does not carry (battery, comm
+# stats, identity, FS params, the full cached-OBIS set) is allowed to get.
+PASSIVE_MAX_SESSION_GAP_S = 21600.0   # 6 h — still 6x fewer connects than the 1 h default
+# Minimum spacing between advertisement-driven state writes. Handling runs per
+# advertisement, and a spoofed flood of keyless 9-byte adverts would otherwise
+# cause a recorder row plus an entity re-render per advert (~50/s at legacy
+# advertising rates). Real register content changes about every 15 minutes, so
+# coalescing costs nothing; the counters still count every advert.
+ADVERT_NOTIFY_MIN_INTERVAL_S = 5.0
 
 # Timings on the BLE side (NOT user-tunable).
 WRITE_TIMEOUT_S = 2.0          # individual GATT write timeout

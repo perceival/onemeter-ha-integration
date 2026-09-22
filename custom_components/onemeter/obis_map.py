@@ -12,10 +12,13 @@ or scales; unknown codes are logged but don't get an entity created.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.const import UnitOfEnergy
+
+from .protocol.decode import format_obis
 
 
 @dataclass(frozen=True)
@@ -38,8 +41,7 @@ class ObisDescriptor:
     requires_prosumer: bool = False
 
     def format_obis(self) -> str:
-        b = self.obis
-        return f"{b[0]}.{b[1]}.{b[2]}.{b[3]}"
+        return format_obis(self.obis)
 
 
 # Reference codes from an Apator NORAX 3 (SK 16-072 MI-003). The
@@ -159,6 +161,19 @@ def lookup(obis: bytes) -> ObisDescriptor | None:
     return KNOWN_OBIS.get(obis)
 
 
+def to_utc_datetime(raw: int) -> datetime | None:
+    """Interpret a raw register value as unix seconds, or None if unusable.
+
+    Registers and advertisement fields are raw u32s, so out-of-range values can
+    legitimately arrive and must degrade to None rather than raise inside a
+    state update.
+    """
+    try:
+        return datetime.fromtimestamp(raw, tz=timezone.utc)
+    except (OSError, ValueError, OverflowError):
+        return None
+
+
 def scaled_value(descriptor: ObisDescriptor, raw: int) -> Any:
     """Apply the descriptor's scale to a raw u32 value, with type-aware coercion.
 
@@ -166,11 +181,7 @@ def scaled_value(descriptor: ObisDescriptor, raw: int) -> Any:
     scaled number — the raw value is interpreted as unix seconds.
     """
     if descriptor.device_class == SensorDeviceClass.TIMESTAMP:
-        from datetime import datetime, timezone
-        try:
-            return datetime.fromtimestamp(raw, tz=timezone.utc)
-        except (OSError, ValueError, OverflowError):
-            return None
+        return to_utc_datetime(raw)
     if descriptor.scale == 1.0:
         return raw
     return raw * descriptor.scale

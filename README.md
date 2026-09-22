@@ -33,7 +33,7 @@ your meter's registers" section below.
 | `sensor.<name>_serial_number` | u32 integer from the device's identity blob (`cmd 0x87`) |
 | `sensor.<name>_ble_mac` | The BLE MAC the device advertises with |
 | `sensor.<name>_last_seen` | UTC timestamp of the most recent successful frame |
-| `sensor.<name>_connection_state` | One of `disconnected`/`connecting`/`handshaking`/`authenticated`/`draining`/`cooling`/`sleeping` |
+| `sensor.<name>_connection_state` | One of `disconnected`/`connecting`/`handshaking`/`authenticated`/`draining`/`cooling`/`sleeping`/`passive` |
 | `sensor.<name>_rx_frames` | Total BLE notifications received this session |
 | `sensor.<name>_rx_errors` | Frame-level errors (CRC, framing) |
 | `sensor.<name>_rx_cipher_rejections` | Times the device returned the canned `0xFF 0x01` rejection |
@@ -42,6 +42,11 @@ your meter's registers" section below.
 | `sensor.<name>_meter_day_cycles_completed` | Device-side counter |
 | `sensor.<name>_configured_meter_protocol` | The protocol (IEC / SML / Blink / DLMS) the integration last sent to the device via `cmd 0x14`. `unknown` if you've left it at "Leave unchanged". |
 | `sensor.<name>_detected_meter` | Result of the last `Auto-detect meter` button press. |
+| `sensor.<name>_data_source` | `active` if the last values came from a GATT session, `passive` if decoded from the broadcast. See [Passive reading](#passive-reading-advertisement-broadcast). |
+| `sensor.<name>_advertised_device_clock` | The device's own clock as carried in its advertisement. It rides in the clear in the minimal advert, so it is unauthenticated — treat it as advisory, unlike the register values. |
+| `sensor.<name>_advertisements_decoded` | Advertisements from this device that decoded successfully. |
+| `sensor.<name>_advertisements_undecodable` | Advertisements from this device that failed to decode. Should stay at 0; a rising count means the broadcast changed shape or is being corrupted. (Other units never reach this handler — the callback filters on your device's address.) |
+| `sensor.<name>_cached_registers` | Diagnostic: state is how many OBIS registers the device has reported, attributes map every one of them (`A.B.C.D` → raw value) including codes that have no sensor of their own. The quickest way to identify what a meter exposes. Note this is readable by any Home Assistant user, not just admins — unlike the diagnostics download. |
 | `button.<name>_poll_now` | Triggers an immediate session — refresh all sensors right now, including a brief listen for live meter pushes. |
 | `button.<name>_auto_detect_meter` | Asks the device to probe the optical port (`cmd 0x19`). Disabled until the device has reported successful meter reads at least once. |
 
@@ -160,6 +165,43 @@ Selecting anything other than "Leave unchanged" tells the integration
 to write the device's flash on the next poll. Changeable later via
 **Configure** on the integration page.
 
+### Passive reading (advertisement broadcast)
+
+The device broadcasts its energy registers on its own schedule, and that
+broadcast is encrypted with a **different** AES key pair from the GATT
+session protocol — a per-device "slot 2" pair stored in the same flash page
+as the mobKey/IV (see [Extracting credentials](#extracting-credentials)).
+
+If you supply that pair (two optional fields in the setup and reauth forms),
+the integration switches to **passive-first**: while advertisements are being
+decoded it never opens a GATT link at all, and only connects once they go
+quiet — or when you press `Poll now` / `Auto-detect meter`. This removes the
+connect/login/drain cycle, which is where the battery cost is: the device
+advertises regardless, so reading the broadcast costs it nothing extra.
+
+Everything the broadcast does not carry — battery voltage, comm stats,
+identity, FS params and the full cached-OBIS set — is refreshed by the
+session that a quiet broadcast triggers, and that session is also what
+re-arms the broadcast. The two paths therefore sustain each other: a device
+whose broadcast stops still gets polled on the normal interval.
+
+**What this means for the poll interval:** while the broadcast is healthy there
+are no sessions at all, so the interval no longer governs how often the device
+is contacted — it bounds how *stale* the session-only values may get instead.
+Battery voltage, comm stats, identity and FS params therefore refresh about
+every six hours rather than hourly (and immediately if you press `Poll now`),
+while the energy registers and the device clock keep updating from the
+broadcast. That ceiling is deliberate: a captured advertisement stays valid
+forever — the CCM nonce is the device's static IV — so without it anyone within
+radio range could replay one every few minutes and keep the integration off the
+link indefinitely.
+
+`sensor.<name>_data_source` shows which path produced the current values;
+`sensor.<name>_advertisements_decoded` / `_undecodable` and
+`sensor.<name>_advertised_device_clock` confirm the broadcast is actually
+being read. Leave the passive fields blank and nothing changes — every read
+goes over GATT exactly as before.
+
 ### Configurable options (after install)
 
 *Settings → Devices & Services → OneMeter <name> → Configure*
@@ -168,6 +210,7 @@ to write the device's flash on the next poll. Changeable later via
 |---|---|---|---|
 | Poll interval (seconds) | 300 – 21600 | 3600 (1 h) | Shorter intervals significantly shorten battery life and may trigger the [device-side cooldown](#known-limitations) more often. |
 | Meter protocol | as above | Leave unchanged | Changing this triggers a flash write on the next session. |
+| Read data passively when possible | on / off | on | Only has an effect when the passive key/IV were entered at setup. Keeps the integration off the GATT link while advertisements are still being decoded; uncheck to always read over GATT. |
 
 ## Extracting credentials
 
@@ -197,9 +240,12 @@ In short, the procedure is:
 3. Start OpenOCD with an appropriate `target/nrf51.cfg`.
 4. Run `python tools/extract_credentials.py`. The script halts the
    CPU, reads the BLE MAC + mobKey + IV using a CRP-bypass gadget,
-   resumes the CPU, and prints the values.
+   resumes the CPU, and prints the values — plus the device's "slot 2"
+   key/IV pair (flash offsets `0x3f044`/`0x3f054`).
 5. Paste the BLE MAC, mobKey, and IV into the integration's config
-   flow.
+   flow. The slot-2 pair is optional: paste it into the passive
+   reading fields to enable
+   [passive reading](#passive-reading-advertisement-broadcast).
 
 Opening the device, soldering to debug pads, and using a SWD
 programmer are non-trivial. If you've never done embedded work
@@ -231,6 +277,24 @@ the only reliable manual clear).
 If the integration appears truly stuck (notification stays up for a
 day), the credentials may genuinely be wrong — open **Configure** and
 re-enter them.
+
+### Passive reading coverage (and what isn't known yet)
+
+Passive reading is deliberately partial:
+
+- **What the broadcast carries:** three tagged register records plus the
+  device's own clock. The energy registers (`0.1.8.0`, `0.2.8.0`, `0.3.8.0`,
+  `0.4.8.0`) and two vendor counters are identified so far. A few tags seen on
+  real hardware still have no OBIS mapping — those are kept raw in the
+  [diagnostics](#diagnostics) dump and are not turned into entities.
+- **What it does not carry:** battery voltage, comm stats, identity, FS
+  params, and most of the 29-register cached-OBIS set. Those still require a
+  session, which is exactly what the staleness fallback provides.
+- **Open question:** whether the data-bearing advertisement keeps flowing
+  when the device is never connected. Bench testing suggests it appears for a
+  while after a session on some units. If it does stop, the fallback runs a
+  session — which re-arms it — so the behaviour is self-correcting either way,
+  but passive mode may not eliminate connections entirely on every device.
 
 ### Single-session-per-power-cycle for short intervals
 

@@ -56,6 +56,13 @@ def format_mac(mac: bytes) -> str:
     return ":".join(f"{b:02X}" for b in mac)
 
 
+def format_obis(obis: bytes) -> str:
+    """Render an OBIS code as A.B.C.D, falling back to hex if not 4 bytes."""
+    if len(obis) != 4:
+        return obis.hex()
+    return f"{obis[0]}.{obis[1]}.{obis[2]}.{obis[3]}"
+
+
 @dataclass(frozen=True)
 class CommStats:
     """Decoded cmd 0x36 communication-statistics blob (28 bytes).

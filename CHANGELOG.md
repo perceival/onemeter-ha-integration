@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Passive reading: the integration can decode the device's broadcast
+  advertisements and, while they keep arriving, stay off the GATT link
+  entirely instead of running a connect/login/drain session each poll. It
+  falls back to a normal session when they go quiet, which also re-arms the
+  broadcast, so the two paths sustain each other. Needs the device's slot-2
+  key/IV — a different pair from the mobKey/IV, read by
+  `tools/extract_credentials.py` and entered as optional fields in the setup
+  and reauth forms. Adds `sensor.<name>_data_source`,
+  `sensor.<name>_advertised_device_clock`, `sensor.<name>_advertisements_decoded`,
+  `sensor.<name>_advertisements_undecodable`, a `passive` value for
+  `sensor.<name>_connection_state`, and a "Read data passively when possible"
+  option to switch the preference off without removing the keys. Coverage is
+  partial by design: the broadcast carries the energy registers and the device
+  clock only, so everything else still comes from a session. While the broadcast
+  is healthy no sessions run at all — the session-only values (battery, comm
+  stats, identity, FS params) are then refreshed by the fallback session at
+  least every six hours, which is the ceiling on their staleness, rather than by
+  the poll interval (that interval only ever makes the gap shorter). Enter a
+  single `-` in the passive key/IV fields on the reauth form to remove a stored
+  pair.
+- `sensor.<name>_cached_registers` — diagnostic entity listing every OBIS
+  register the device has reported: the state is how many there are, and the
+  attributes map each `A.B.C.D` code to its raw value, including codes that
+  have no sensor of their own. Makes it possible to identify what a given
+  meter exposes from the UI, without downloading the diagnostics dump. On
+  devices with passive reading configured the same entity also shows the
+  broadcast-only tags under `sensor.<name>_data_source`'s attributes when they
+  have no OBIS mapping yet.
 - `button.<name>_poll_now` — triggers an immediate session. Includes
   a brief drain phase that captures any live `cmd 0x25` / `cmd 0x20`
   frames the meter pushes before disconnect.

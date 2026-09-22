@@ -19,6 +19,12 @@ This integration needs two 16-byte secrets from your OneMeter device:
 | **mobKey** | The AES-128 key the device uses to encrypt its BLE traffic. |
 | **IV**     | The initial cleartext block that, encrypted with mobKey, produces the keystream the device XORs payloads with. |
 
+The script also reads a second, unrelated pair from the next flash slots —
+the **broadcast key/IV**. Those decrypt the device's advertisement
+broadcasts and are only needed for the optional passive-reading feature
+(see the README's *Passive reading* section). A device without them still
+works normally; everything is simply read over GATT.
+
 Both were written into the device's internal flash by the OneMeter
 mobile app's *registration* flow when you first paired the device with
 the OneMeter cloud. They are **per-device** — your neighbour's mobKey
@@ -140,7 +146,9 @@ The script:
 - Reads the BLE MAC from FICR (unprotected, sanity-check that you're
   talking to the right chip).
 - Uses the CRP-bypass gadget to read 16 bytes at flash `0x0003F024`
-  (mobKey) and 16 bytes at `0x0003F034` (IV).
+  (mobKey) and 16 bytes at `0x0003F034` (IV), plus the broadcast pair at
+  `0x0003F044`/`0x0003F054` (optional — a failed read there is a warning,
+  not an error).
 - Resumes the CPU and exits.
 
 A successful run prints something like:
@@ -155,8 +163,13 @@ DEVICE ID    : 4F03BD65...
 mobKey (hex) : f2bec5110dc2097b7623a58524157bd2
 IV     (hex) : 43dff996f127364ff58015b0671198dd
 
-Copy the BLE MAC, mobKey, and IV into the integration's config flow.
-These bytes are sensitive — treat them like a password.
+Optional — enables passive (broadcast) reading:
+passive key  : 0f1e2d3c4b5a69788796a5b4c3d2e1f0
+passive IV   : 112233445566778899aabbccddeeff00
+
+Copy the BLE MAC, mobKey, and IV into the integration's config flow. The
+passive pair is optional — it goes in the passive key/IV fields. These
+bytes are sensitive — treat them like a password.
 ```
 
 Cross-check the BLE MAC against the sticker on the device (or against

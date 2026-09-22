@@ -21,8 +21,9 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_PROSUMER, DOMAIN
 from .coordinator import OneMeterCoordinator, OneMeterData
-from .obis_map import KNOWN_OBIS, ObisDescriptor, scaled_value
-from .protocol.decode import SENTINEL_NO_VALUE
+from .obis_map import KNOWN_OBIS, ObisDescriptor, scaled_value, to_utc_datetime
+from .protocol.advert import ADVERT_TAG_OBIS
+from .protocol.decode import SENTINEL_NO_VALUE, format_obis
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -30,6 +31,57 @@ class OneMeterSensorDescription(SensorEntityDescription):
     """Description of an OneMeter sensor."""
 
     value_fn: Callable[[OneMeterData], Any]
+    # Optional extra state attributes, for diagnostic entities that surface a
+    # whole map of values where one entity per value would be entity sprawl.
+    attrs_fn: Callable[[OneMeterData], dict[str, Any]] | None = None
+
+
+def _advert_clock_attrs(data: OneMeterData) -> dict[str, Any]:
+    """Say where the advertised clock came from.
+
+    Only the 24-byte data advert's clock is inside the CCM message; the 9-byte
+    minimal advert carries it in the clear, so a value can be set by anything in
+    radio range that knows this device's address. Worth surfacing rather than
+    leaving the reader to assume the entity is authenticated.
+    """
+    return {
+        "source": "data advert (authenticated)" if data.advert_clock_authenticated
+        else "minimal advert (plaintext, unauthenticated)",
+    }
+
+
+def _advert_clock_dt(data: OneMeterData) -> datetime | None:
+    """The advertised device clock as a tz-aware datetime.
+
+    The clock is a raw u32 off the wire, so out-of-range values are possible
+    and must degrade to None rather than raise inside a state update.
+    """
+    if data.advert_clock is None:
+        return None
+    return to_utc_datetime(data.advert_clock)
+
+
+def _unmapped_advert_tags(data: OneMeterData) -> dict[str, Any]:
+    """Broadcast register tags with no OBIS mapping yet, as {0xNN: raw value}."""
+    return {
+        f"0x{tag:02X}": value
+        for tag, value in sorted(data.advert_records.items())
+        if tag not in ADVERT_TAG_OBIS
+    }
+
+
+def _cached_registers(data: OneMeterData) -> dict[str, Any]:
+    """Every cached OBIS register as {A.B.C.D: raw u32 value}.
+
+    Includes codes with no descriptor (which get no entity of their own) and
+    the device's "no value" sentinel, which shows up as 4294967295 — the point
+    of this entity is to show what the device actually holds, unfiltered, so a
+    meter's codes can be identified without downloading diagnostics.
+    """
+    return {
+        format_obis(obis): entry.value
+        for obis, entry in sorted(data.cached_obis_by_code.items())
+    }
 
 
 SENSORS: tuple[OneMeterSensorDescription, ...] = (
@@ -142,6 +194,54 @@ SENSORS: tuple[OneMeterSensorDescription, ...] = (
         # user changes the Meter Protocol option from "Leave unchanged".
         value_fn=lambda d: d.configured_protocol_name,
     ),
+    # --- Passive (advertisement) reading ---
+    OneMeterSensorDescription(
+        key="data_source",
+        translation_key="data_source",
+        name="Data source",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # "active" = the last values came from a GATT session, "passive" =
+        # decoded from the broadcast. Passive carries the energy registers and
+        # the device clock only, so a mix across fields is normal.
+        value_fn=lambda d: d.data_source,
+        attrs_fn=_unmapped_advert_tags,
+    ),
+    OneMeterSensorDescription(
+        key="advert_clock",
+        translation_key="advert_clock",
+        name="Advertised device clock",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_advert_clock_dt,
+        attrs_fn=_advert_clock_attrs,
+    ),
+    OneMeterSensorDescription(
+        key="adv_frames",
+        translation_key="adv_frames",
+        name="Advertisements decoded",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # Deliberately no state_class: this counter is driven from the radio, so
+        # it must not feed HA's long-term statistics.
+        value_fn=lambda d: d.adv_frames,
+    ),
+    OneMeterSensorDescription(
+        key="adv_errors",
+        translation_key="adv_errors",
+        name="Advertisements undecodable",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: d.adv_errors,
+    ),
+    OneMeterSensorDescription(
+        key="cached_registers",
+        translation_key="cached_registers",
+        name="Cached OBIS registers",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # The state is how many registers the device has reported; the
+        # attributes carry the values themselves, keyed by A.B.C.D.
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: len(d.cached_obis_by_code),
+        attrs_fn=_cached_registers,
+    ),
 )
 
 
@@ -213,6 +313,13 @@ class OneMeterSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity):
     @property
     def native_value(self) -> Any:
         return self.entity_description.value_fn(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        attrs_fn = self.entity_description.attrs_fn
+        if attrs_fn is None:
+            return None
+        return attrs_fn(self.coordinator.data)
 
 
 class OneMeterObisSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity):

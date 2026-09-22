@@ -16,26 +16,30 @@
       },
       "credentials": {
         "title": "OneMeter credentials",
-        "description": "Enter the AES key (mobKey) and IV for device {name} ({address}). These 16-byte values are stored in the device's flash and must be extracted via SWD. See the project README for instructions.\n\nChoose the meter protocol the device should use to read your meter. If you don't know yet, leave it as 'Leave unchanged' — you can set it later from the device's Configure page. Selecting a non-default value writes to the device's flash.\n\nAre you a prosumer (you also feed energy back to the grid, e.g. solar)? This only affects which sensors are enabled by default and can be changed later from the device's Configure page.",
+        "description": "Enter the AES key (mobKey) and IV for device {name} ({address}). These 16-byte values are stored in the device's flash and must be extracted via SWD. See the project README for instructions.\n\nChoose the meter protocol the device should use to read your meter. If you don't know yet, leave it as 'Leave unchanged' — you can set it later from the device's Configure page. Selecting a non-default value writes to the device's flash.\n\nAre you a prosumer (you also feed energy back to the grid, e.g. solar)? This only affects which sensors are enabled by default and can be changed later from the device's Configure page.\n\nThe optional passive key/IV pair is also stored in the device's flash (the same extraction tool reads it). With these the integration can decode the device's broadcast advertisements, and while those keep arriving it stays off the GATT link entirely — which extends battery life substantially. Leave both blank to read everything over GATT as before.",
         "data": {
           "key": "AES key (32 hex chars)",
           "iv": "IV (32 hex chars)",
+          "passive_key": "Passive key (32 hex chars, optional)",
+          "passive_iv": "Passive IV (32 hex chars, optional)",
           "meter_protocol": "Meter protocol",
-          "is_prosumer": "I'm a prosumer (I also produce energy)"
-        }
+          "is_prosumer": "I'm a prosumer (I also produce energy)"        }
       },
       "reauth_confirm": {
         "title": "Re-enter OneMeter credentials",
-        "description": "The current credentials for {name} ({address}) are no longer accepted. Re-enter the AES key and IV.",
+        "description": "The current credentials for {name} ({address}) are no longer accepted. Re-enter the AES key and IV.\n\nThe passive key/IV fields are optional: leave them blank to keep the pair already stored, or enter a single '-' to remove it.",
         "data": {
           "key": "AES key (32 hex chars)",
-          "iv": "IV (32 hex chars)"
+          "iv": "IV (32 hex chars)",
+          "passive_key": "Passive key (32 hex chars, optional)",
+          "passive_iv": "Passive IV (32 hex chars, optional)"
         }
       }
     },
     "error": {
       "invalid_hex": "Must be 32 hexadecimal characters (16 bytes).",
-      "invalid_mac": "Not a valid BLE MAC address (expected AA:BB:CC:DD:EE:FF)."
+      "invalid_mac": "Not a valid BLE MAC address (expected AA:BB:CC:DD:EE:FF).",
+      "passive_pair_incomplete": "Passive reading needs both the passive key and the passive IV — fill in both, or leave both blank."
     },
     "abort": {
       "already_configured": "This OneMeter is already configured.",
@@ -47,11 +51,12 @@
     "step": {
       "init": {
         "title": "OneMeter — options",
-        "description": "Each poll wakes the BLE radio, logs in, reads the device, and disconnects. The default 1 hour cadence gives roughly 12 months on the CR2032 battery. Shorter intervals significantly shorten battery life. Allowed range: {min_s}–{max_s} seconds. Press the \"Poll now\" button to refresh between scheduled polls.\n\nChanging the meter protocol writes to the device's flash on the next poll. 'Leave unchanged' is the safe default — the integration won't touch the device's protocol setting.\n\nAre you a prosumer (you also feed energy back to the grid, e.g. solar)? Enables the Energy export total sensor by default for new installs. Most installs should leave this unchecked. If that sensor was already created and disabled, checking this box now won't un-hide it automatically — enable it once under Settings → Devices & Services → Entities.",
+        "description": "Each poll wakes the BLE radio, logs in, reads the device, and disconnects. The default 1 hour cadence gives roughly 12 months on the CR2032 battery. Shorter intervals significantly shorten battery life. Allowed range: {min_s}–{max_s} seconds. Press the \"Poll now\" button to refresh between scheduled polls.\n\nChanging the meter protocol writes to the device's flash on the next poll. 'Leave unchanged' is the safe default — the integration won't touch the device's protocol setting.\n\nAre you a prosumer (you also feed energy back to the grid, e.g. solar)? Enables the Energy export total sensor by default for new installs. Most installs should leave this unchecked. If that sensor was already created and disabled, checking this box now won't un-hide it automatically — enable it once under Settings → Devices & Services → Entities.\n\n'Read data passively' only has an effect when the passive key/IV were entered at setup. It keeps the integration off the GATT link while the device's advertisements are still being decoded, and connects again once they go quiet. Uncheck it to always read over GATT — useful to compare the two paths.",
         "data": {
           "poll_interval": "Poll interval (seconds)",
           "meter_protocol": "Meter protocol",
-          "is_prosumer": "I'm a prosumer (I also produce energy)"
+          "is_prosumer": "I'm a prosumer (I also produce energy)",
+          "passive_reading": "Read data passively when possible"
         }
       }
     },
@@ -73,7 +78,12 @@
       "meter_reads_succeeded": {"name": "Meter reads succeeded"},
       "meter_reads_failed":    {"name": "Meter reads failed"},
       "meter_day_cycles":      {"name": "Meter day cycles completed"},
-      "last_protocol_set":     {"name": "Last protocol set"}
+      "last_protocol_set":     {"name": "Last protocol set"},
+      "data_source":           {"name": "Data source"},
+      "advert_clock":          {"name": "Advertised device clock"},
+      "adv_frames":            {"name": "Advertisements decoded"},
+      "adv_errors":            {"name": "Advertisements undecodable"},
+      "cached_registers":      {"name": "Cached OBIS registers"}
     },
     "button": {
       "poll_now":          {"name": "Poll now"},

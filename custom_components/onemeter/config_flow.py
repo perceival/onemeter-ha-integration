@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import voluptuous as vol
@@ -17,8 +18,12 @@ from .const import (
     CONF_IV,
     CONF_KEY,
     CONF_METER_PROTOCOL,
+    CONF_PASSIVE,
+    CONF_PASSIVE_IV,
+    CONF_PASSIVE_KEY,
     CONF_POLL_INTERVAL,
     CONF_PROSUMER,
+    DEFAULT_PASSIVE,
     DEFAULT_POLL_INTERVAL_S,
     DOMAIN,
     MAX_POLL_INTERVAL_S,
@@ -43,22 +48,80 @@ CREDENTIALS_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_KEY): str,
         vol.Required(CONF_IV): str,
+        # Optional: the broadcast channel's own key pair. Without it the
+        # integration reads everything over GATT, exactly as before — with it,
+        # passive reading can replace most connects (see const.py).
+        vol.Optional(CONF_PASSIVE_KEY, default=""): str,
+        vol.Optional(CONF_PASSIVE_IV, default=""): str,
         vol.Required(CONF_METER_PROTOCOL, default=METER_PROTOCOL_UNCHANGED): vol.In(PROTOCOL_CHOICES),
         vol.Required(CONF_PROSUMER, default=False): bool,
     }
 )
 
 
-def _normalize_hex32(value: str) -> str | None:
-    """Accept colons/spaces in the input; return 32 lowercase hex chars, or None."""
-    cleaned = value.replace(" ", "").replace(":", "").lower()
-    if len(cleaned) != 32:
+def _normalize_optional_hex32(value: str, errors: dict[str, str], field: str) -> str | None:
+    """Normalize an optional 16-byte hex field; blank means "not provided".
+
+    Returns PASSIVE_CLEAR_TOKEN unchanged when the user asked for removal, else
+    the normalized hex, else None. Records ``invalid_hex`` under `field` when a
+    value is present but malformed, so the caller can just check `errors`.
+    """
+    cleaned = (value or "").strip()
+    if not cleaned:
         return None
-    try:
-        bytes.fromhex(cleaned)
-    except ValueError:
+    if cleaned == PASSIVE_CLEAR_TOKEN:
+        return PASSIVE_CLEAR_TOKEN
+    normalized = _normalize_hex32(cleaned)
+    if normalized is None:
+        errors[field] = "invalid_hex"
+    return normalized
+
+
+_HEX32_RE = re.compile(r"[0-9a-f]{32}")
+
+# Entering this instead of a passive key/IV removes a stored pair; blank means
+# "leave whatever is stored alone". Without it there would be no way to drop the
+# passive credentials short of deleting the whole config entry.
+PASSIVE_CLEAR_TOKEN = "-"
+
+
+def _normalize_hex32(value: str) -> str | None:
+    """Accept colons/whitespace in the input; return 32 lowercase hex chars, or None.
+
+    Validated by regex rather than by `bytes.fromhex`, which silently *skips*
+    tabs, newlines and other whitespace: a paste out of a wrapped terminal could
+    otherwise satisfy a 32-*character* check while decoding to 15 bytes, and a
+    wrong-length key raises in the coordinator's HA-side advertisement callback.
+    """
+    cleaned = re.sub(r"[\s:]", "", value).lower()
+    if not _HEX32_RE.fullmatch(cleaned):
         return None
     return cleaned
+
+
+def _check_passive_pair(
+    passive_key: str | None, passive_iv: str | None, errors: dict[str, str]
+) -> None:
+    """Reject a half-filled passive pair.
+
+    Both halves are needed for passive_enabled to be true, so storing only one
+    would leave the feature silently off with nothing in the UI to explain why.
+    The clear token counts as "not set" here: entering it in one field means
+    "remove the pair", which is handled by the caller.
+
+    Fields that already have a more specific error are left alone — a malformed
+    value comes back from the normalizer as None (indistinguishable from blank),
+    and telling a user who filled the other field correctly to "fill in both"
+    would bury the "must be 32 hex chars" message on the field that is actually
+    wrong.
+    """
+    if CONF_PASSIVE_KEY in errors or CONF_PASSIVE_IV in errors:
+        return
+    key_set = passive_key is not None and passive_key != PASSIVE_CLEAR_TOKEN
+    iv_set = passive_iv is not None and passive_iv != PASSIVE_CLEAR_TOKEN
+    if key_set != iv_set:
+        errors[CONF_PASSIVE_KEY] = "passive_pair_incomplete"
+        errors[CONF_PASSIVE_IV] = "passive_pair_incomplete"
 
 
 class OneMeterConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -159,6 +222,13 @@ class OneMeterConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_KEY] = "invalid_hex"
             if iv is None:
                 errors[CONF_IV] = "invalid_hex"
+            passive_key = _normalize_optional_hex32(
+                user_input.get(CONF_PASSIVE_KEY, ""), errors, CONF_PASSIVE_KEY
+            )
+            passive_iv = _normalize_optional_hex32(
+                user_input.get(CONF_PASSIVE_IV, ""), errors, CONF_PASSIVE_IV
+            )
+            _check_passive_pair(passive_key, passive_iv, errors)
             if not errors:
                 assert self._discovered_address is not None
                 # Store credentials in entry data (durable, not exposed
@@ -166,13 +236,21 @@ class OneMeterConfigFlow(ConfigFlow, domain=DOMAIN):
                 # because the user can change it later — start with
                 # whatever they picked at setup.
                 proto_choice = user_input.get(CONF_METER_PROTOCOL, METER_PROTOCOL_UNCHANGED)
+                data: dict[str, Any] = {
+                    CONF_ADDRESS: self._discovered_address,
+                    CONF_KEY: key,
+                    CONF_IV: iv,
+                }
+                # Absent passive keys are simply "not configured": the
+                # coordinator then never registers for advertisements. (At
+                # setup there is nothing to clear, so the token is ignored.)
+                if passive_key and passive_key != PASSIVE_CLEAR_TOKEN:
+                    data[CONF_PASSIVE_KEY] = passive_key
+                if passive_iv and passive_iv != PASSIVE_CLEAR_TOKEN:
+                    data[CONF_PASSIVE_IV] = passive_iv
                 return self.async_create_entry(
                     title=self._discovered_name or self._discovered_address,
-                    data={
-                        CONF_ADDRESS: self._discovered_address,
-                        CONF_KEY: key,
-                        CONF_IV: iv,
-                    },
+                    data=data,
                     options={
                         CONF_METER_PROTOCOL: proto_choice,
                         CONF_PROSUMER: user_input.get(CONF_PROSUMER, False),
@@ -208,9 +286,27 @@ class OneMeterConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_KEY] = "invalid_hex"
             if iv is None:
                 errors[CONF_IV] = "invalid_hex"
+            passive_key = _normalize_optional_hex32(
+                user_input.get(CONF_PASSIVE_KEY, ""), errors, CONF_PASSIVE_KEY
+            )
+            passive_iv = _normalize_optional_hex32(
+                user_input.get(CONF_PASSIVE_IV, ""), errors, CONF_PASSIVE_IV
+            )
+            _check_passive_pair(passive_key, passive_iv, errors)
             if not errors:
                 assert self._reauth_entry is not None
                 new_data = {**self._reauth_entry.data, CONF_KEY: key, CONF_IV: iv}
+                # Blank passive fields keep whatever was already stored (a
+                # reauth prompted by the GATT key must not quietly drop them);
+                # the clear token removes the pair outright.
+                if PASSIVE_CLEAR_TOKEN in (passive_key, passive_iv):
+                    new_data.pop(CONF_PASSIVE_KEY, None)
+                    new_data.pop(CONF_PASSIVE_IV, None)
+                else:
+                    if passive_key:
+                        new_data[CONF_PASSIVE_KEY] = passive_key
+                    if passive_iv:
+                        new_data[CONF_PASSIVE_IV] = passive_iv
                 return self.async_update_reload_and_abort(self._reauth_entry, data=new_data)
         return self.async_show_form(
             step_id="reauth_confirm",
@@ -249,6 +345,7 @@ class OneMeterOptionsFlow(OptionsFlow):
                         CONF_POLL_INTERVAL: interval,
                         CONF_METER_PROTOCOL: user_input[CONF_METER_PROTOCOL],
                         CONF_PROSUMER: user_input.get(CONF_PROSUMER, False),
+                        CONF_PASSIVE: user_input.get(CONF_PASSIVE, DEFAULT_PASSIVE),
                     },
                 )
 
@@ -268,6 +365,10 @@ class OneMeterOptionsFlow(OptionsFlow):
                     vol.Required(
                         CONF_PROSUMER,
                         default=opts.get(CONF_PROSUMER, False),
+                    ): bool,
+                    vol.Required(
+                        CONF_PASSIVE,
+                        default=opts.get(CONF_PASSIVE, DEFAULT_PASSIVE),
                     ): bool,
                 }
             ),

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -31,12 +32,17 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
+    ADVERT_NOTIFY_MIN_INTERVAL_S,
     AUTH_FAIL_THRESHOLD,
     CONF_ADDRESS,
     CONF_IV,
     CONF_KEY,
     CONF_METER_PROTOCOL,
+    CONF_PASSIVE,
+    CONF_PASSIVE_IV,
+    CONF_PASSIVE_KEY,
     CONF_POLL_INTERVAL,
+    DEFAULT_PASSIVE,
     DEFAULT_POLL_INTERVAL_S,
     DOMAIN,
     EPSI_RX_CHAR,
@@ -48,6 +54,9 @@ from .const import (
     LOGIN_TIMEOUT_S,
     METER_PROTOCOL_UNCHANGED,
     ONE_SHOT_PROBES,
+    PASSIVE_FALLBACK_S,
+    PASSIVE_MAX_SESSION_GAP_S,
+    PASSIVE_WAIT_S,
     POST_CONNECT_SETTLE_S,
     POST_SUBSCRIBE_SETTLE_S,
     RECONNECT_BACKOFF_MAX_S,
@@ -56,8 +65,19 @@ from .const import (
     RX_DEDUP_WINDOW_S,
     WRITE_TIMEOUT_S,
 )
+from . import policy
+from .protocol import advert
 from .protocol import commands as proto_cmds
-from .protocol.decode import AutoDetectResult, BlockHeader, DataRecord, DeviceTime, Identity, ObisEntry, format_mac
+from .protocol.decode import (
+    AutoDetectResult,
+    BlockHeader,
+    DataRecord,
+    DeviceTime,
+    Identity,
+    ObisEntry,
+    format_mac,
+    format_obis,
+)
 from .protocol.session import (
     BatteryReading,
     CommStats,
@@ -79,6 +99,7 @@ class ConnState(Enum):
     DRAINING = "draining"     # in force-fresh-read mode, listening for live frames
     COOLING = "cooling"       # short wait between failed attempts
     SLEEPING = "sleeping"     # long wait between successful polls (polled mode)
+    PASSIVE = "passive"       # reading the broadcast only; no GATT link open
 
 
 @dataclass
@@ -136,6 +157,47 @@ class OneMeterData:
     rx_errors: int = 0
     rx_rejections: int = 0
     state: str = ConnState.DISCONNECTED.value
+    # --- Passive (advertisement) reading ---
+    # "active" = values came from a GATT session, "passive" = decoded from the
+    # broadcast. Passive only carries the energy-register records + the device
+    # clock, so a mix of both across fields is normal.
+    data_source: str = "active"
+    advert_clock: int | None = None           # device clock from the broadcast
+    advert_quarter_hour: int | None = None    # 1-based, wraps at 96
+    advert_records: dict[int, int] = field(default_factory=dict)  # tag -> raw value
+    advert_last_seen: datetime | None = None       # last decodable advertisement
+    advert_data_last_seen: datetime | None = None  # last one that carried records
+    adv_frames: int = 0                       # advertisements decoded
+    # Advertisements from *this* device that failed to decode: corruption, or a
+    # payload shape this decoder doesn't know. Other units never reach the
+    # handler (the bluetooth callback filters on this device's address), so a
+    # rising count is a real signal about this device rather than radio noise.
+    adv_errors: int = 0
+    # True when advert_clock came from a 24-byte data advert (whose clock is
+    # inside the CCM message) rather than the cleartext 9-byte one.
+    advert_clock_authenticated: bool = False
+    # Passive register values refused for sitting below the cached value. A
+    # sustained run of these is the signal that separates a replayed
+    # advertisement from a genuine device-side decrease.
+    adv_regressions: int = 0
+
+
+def _parse_passive_secret(value: str | None) -> bytes | None:
+    """Decode a stored passive key/IV, treating anything malformed as absent.
+
+    The config flow validates these, so a bad value here means the storage was
+    edited by hand. Treating it as "not configured" — everything read over GATT,
+    which is the pre-passive behaviour — is a better outcome than failing entry
+    setup with a raw traceback, and it is the same fail-safe direction the
+    advertisement callback depends on.
+    """
+    if not value:
+        return None
+    try:
+        raw = bytes.fromhex(value)
+    except ValueError:
+        return None
+    return raw if len(raw) == 16 else None
 
 
 class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
@@ -200,6 +262,51 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
         # client.disconnect() call returned). If this never fires after
         # we ask to disconnect, the proxy's slot is stuck-allocated.
         self._disconnected_event: asyncio.Event = asyncio.Event()
+        # --- Passive (advertisement) reading ---
+        # The slot-2 key/IV are optional: without them passive reading is
+        # simply unavailable and everything is read over GATT, as before.
+        passive_key = entry.data.get(CONF_PASSIVE_KEY)
+        passive_iv = entry.data.get(CONF_PASSIVE_IV)
+        self._passive_key = _parse_passive_secret(passive_key)
+        self._passive_iv = _parse_passive_secret(passive_iv)
+        if (passive_key and self._passive_key is None) or (
+            passive_iv and self._passive_iv is None
+        ):
+            _LOGGER.warning(
+                "OneMeter %s: stored passive key/IV is malformed — passive reading "
+                "stays disabled and everything is read over GATT",
+                self.address,
+            )
+        self._passive_preferred: bool = bool(opts.get(CONF_PASSIVE, DEFAULT_PASSIVE))
+        # Monotonic stamp of the last advertisement that carried register
+        # records. Deliberately *not* a wall-clock datetime: freshness must not
+        # be fooled by an NTP step on the proxy, and it must only ever be set
+        # where records actually arrived (see _passive_is_fresh).
+        self._passive_data_at: float | None = None
+        # Outcome of the most recent session attempt, so the policy can avoid
+        # deferring a retry by the whole poll interval. See policy.next_action.
+        self._last_session_failed = False
+        # Coalesces advertisement-driven state writes (see _notify_advert_listeners).
+        self._last_adv_notify_at: float | None = None
+        # Last advertised clock accepted for the drift sensor — see the guard in
+        # async_handle_advertisement.
+        self._last_adv_clock: int | None = None
+        # OBIS codes already warned about for a refused passive regression, so a
+        # replay campaign logs once per code rather than continuously.
+        self._regression_warned: set[bytes] = set()
+        # Set by the manual-poll / auto-detect buttons so they still run a
+        # session while passive data is current.
+        self._force_active_once = False
+        # True only while _connect_and_run_session is executing. The buttons
+        # consult it so a request arriving mid-session doesn't queue a second,
+        # back-to-back connection.
+        self._in_session = False
+        # Monotonic time of the last *successful* active session. Bounds how
+        # often we may connect, whatever the passive stream is doing.
+        self._last_active_session_at: float | None = None
+        # Advertisement tags seen so far, so the first sighting of an
+        # unidentified register is logged once rather than every advert.
+        self._seen_adv_tags: set[int] = set()
         self.data = OneMeterData(state=self._state.value)
 
     # --- Public lifecycle ----------------------------------------------------
@@ -224,10 +331,26 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
     def async_request_poll_now(self) -> None:
         """Interrupt the current sleep and start a poll session immediately.
 
-        Safe to call from any HA thread; only sets an event. If a session
-        is already running, this is a no-op (the next sleep cycle will
-        see the event and run immediately).
+        Safe to call from any HA thread; only sets an event. A request that
+        arrives while a session is already running is a no-op — that session
+        refreshes everything a fresh one would, and queueing another here would
+        produce two connections back-to-back, which is what the device's
+        post-session cooldown punishes. While passive mode is active a request
+        does force a real connection, bypassing the passive-first gate once.
         """
+        if self._in_session:
+            # Say so rather than discarding an explicit action silently: the
+            # in-flight session runs the same probe set, so the request is
+            # satisfied — but the user pressed a button and should be able to
+            # find out why nothing appeared to happen.
+            _LOGGER.info(
+                "OneMeter %s: 'Poll now' arrived while a session was already running "
+                "— that session refreshes the same values, so no second connection "
+                "is made",
+                self.address,
+            )
+            return
+        self._force_active_once = True
         self._wake_now.set()
 
     def async_request_auto_detect(self) -> None:
@@ -237,6 +360,12 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
         on comm_succeeded_total > 0). Result populates data.detected_meter.
         """
         self._auto_detect_pending = True
+        # Always force, even mid-session: the pending flag is consumed by
+        # whichever session reaches its cmd 0x19 step, so if the in-flight one
+        # already passed it the request would otherwise sit parked until the
+        # broadcast went stale. The mandatory RECONNECT_COOLDOWN_S still bounds
+        # the worst case to one extra connection for an explicit user press.
+        self._force_active_once = True
         self._wake_now.set()
 
     def register_add_register_entity_cb(self, cb) -> None:
@@ -244,6 +373,182 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
         this when a new `dataType` is observed for the first time, to
         create a sensor entity for it."""
         self._add_register_entity_cb = cb
+
+    # --- Passive (advertisement) reading ------------------------------------
+
+    @property
+    def passive_enabled(self) -> bool:
+        """True when passive reading is configured and not switched off.
+
+        The length checks matter beyond defence in depth: they are what keeps a
+        malformed stored value from reaching `decrypt_advert`, which raises on
+        a wrong-size key — and this is armed from HA's bluetooth callback, where
+        nothing may raise.
+        """
+        return (
+            self._passive_key is not None
+            and self._passive_iv is not None
+            and len(self._passive_key) == 16
+            and len(self._passive_iv) == 16
+            and self._passive_preferred
+        )
+
+    def async_handle_advertisement(self, payload: bytes) -> None:
+        """Decode one advertisement and fold its values into the cached state.
+
+        Called from HA's bluetooth callback, so this runs on the event loop for
+        every matching advertisement (a data advert arrives roughly every
+        20-40 s). Decoding is a single AES-CCM verify, and it returns
+        immediately unless passive reading is configured.
+
+        A payload that does not verify is counted and dropped, never raised.
+        The callback already filtered to this device's address, so an
+        undecodable payload means corruption or an advert shape this decoder
+        does not know — not another unit, and not general RF noise.
+        """
+        if not self.passive_enabled:
+            return
+        try:
+            adv = advert.decode_advertisement(payload, self._passive_key, self._passive_iv)
+        except Exception:  # noqa: BLE001
+            # This runs inside HA's bluetooth dispatch, so nothing may escape.
+            # It should be unreachable — passive_enabled length-checks the keys
+            # precisely so decrypt_advert cannot raise — but the invariant is
+            # worth enforcing rather than assuming.
+            self.data.adv_errors += 1
+            _LOGGER.exception("OneMeter %s: advertisement decoding raised", self.address)
+            self._notify_advert_listeners()
+            return
+        if adv is None:
+            self.data.adv_errors += 1
+            _LOGGER.debug(
+                "OneMeter %s: undecodable advertisement (%d bytes)", self.address, len(payload)
+            )
+            self._notify_advert_listeners()
+            return
+        self.data.adv_frames += 1
+        self.data.advert_clock = adv.clock
+        # The clock is authenticated only in the 24-byte shape; the 9-byte
+        # minimal advert carries it in the clear, so record which this was and
+        # let the entity say so (the value itself is still worth showing — it is
+        # the only signal available without a key).
+        self.data.advert_clock_authenticated = bool(adv.records)
+        self.data.advert_last_seen = datetime.now(timezone.utc)
+        if adv.records:
+            self.data.advert_records = {rec.tag: rec.value for rec in adv.records}
+            self.data.advert_data_last_seen = self.data.advert_last_seen
+            self.data.advert_quarter_hour = adv.quarter_hour
+            # Freshness is stamped only *here*: the clock-only advert carries no
+            # registers, so it must not be able to hold the active path off.
+            self._passive_data_at = time.monotonic()
+            # Drift is written only for a clock that advanced. A replayed
+            # advertisement re-verifies forever, and drift = clock - now differs
+            # on every replay, so an ungated write would let a replayer feed
+            # HA's long-term statistics (this sensor is a MEASUREMENT) a bogus
+            # sample per throttle window for as long as they keep replaying. A
+            # genuine backwards re-sync leaves the passive value stale until the
+            # next session corrects it, which the fallback cap bounds to 6 h.
+            if self._last_adv_clock is None or adv.clock >= self._last_adv_clock:
+                self._last_adv_clock = adv.clock
+                self.data.device_clock_drift_s = adv.clock - int(time.time())
+            self._apply_obis_values(adv.obis_values())
+            self.data.data_source = "passive"
+            new_tags = {rec.tag for rec in adv.records} - self._seen_adv_tags
+            if new_tags:
+                self._seen_adv_tags |= new_tags
+                _LOGGER.info(
+                    "OneMeter %s: advertisement carries register tag(s) %s "
+                    "(unidentified tags are reported so they can be mapped)",
+                    self.address,
+                    ", ".join(
+                        f"0x{t:02X}{'' if t in advert.ADVERT_TAG_OBIS else ' (unmapped)'}"
+                        for t in sorted(new_tags)
+                    ),
+                )
+        _LOGGER.debug(
+            "OneMeter %s: passive advert clock=%d records=%s quarter_hour=%s",
+            self.address, adv.clock,
+            {f"0x{r.tag:02X}": r.value for r in adv.records} or "none",
+            adv.quarter_hour,
+        )
+        self._notify_advert_listeners()
+
+    def _notify_advert_listeners(self) -> None:
+        """Push passive updates to HA, coalesced.
+
+        Advertisement handling is driven from the radio, so a spoofed flood of
+        keyless 9-byte adverts could otherwise cause a state write — a recorder
+        row plus a re-render of every entity — per advert, which is ~50/s at
+        legacy advertising rates. Real register content only changes about every
+        15 minutes, so coalescing to one update per interval costs nothing and
+        bounds that: the counters still count every advert, they are just
+        published less often.
+        """
+        now = time.monotonic()
+        if not policy.should_notify(
+            last_notify_at=self._last_adv_notify_at,
+            now=now,
+            min_interval_s=ADVERT_NOTIFY_MIN_INTERVAL_S,
+        ):
+            return
+        self._last_adv_notify_at = now
+        self.async_set_updated_data(self.data)
+
+    def _apply_obis_values(self, values: dict[bytes, int]) -> None:
+        """Merge passively-decoded registers into the cached-OBIS store.
+
+        Passive updates are partial — whichever tags the current rotation slot
+        happens to carry — so they merge rather than replace, unlike a cmd 0x21
+        response, which is the device's authoritative full set and overwrites
+        this dict wholesale on the next active session.
+
+        Merges never move a register backwards (that rule lives in
+        `policy.merge_cached`): the broadcast carries no ordering information and
+        a captured advertisement re-verifies forever, so a replay must not be
+        able to make a TOTAL_INCREASING sensor regress and log a meter reset in
+        HA's statistics. This does *not* make mirrored tag pairs (0x0c/0x0d,
+        0x11/0x12) order-independent — `Advertisement.obis_values()` collapses
+        them with the last record winning — but on real hardware both members
+        carry the same value, and the guard still stops the survivor regressing
+        the stored one.
+
+        Note the monotonic rule is an assumption for the four mapped codes that
+        have no descriptor yet (0x16, 0x1B, 0x56, 0x57). If one of those turns
+        out not to be monotonic, add its descriptor and revisit before trusting
+        it.
+
+        `raw` is rebuilt as ``[obis][u32 LE]`` — the canonical wire form of an
+        entry, so the value renders the same as a session-read one.
+        """
+        cached_raw = {o: e.value for o, e in self.data.cached_obis_by_code.items()}
+        accepted = policy.merge_cached(cached_raw, values)
+        skipped = set(values) - set(accepted)
+        if skipped:
+            # Surfaced loudly once per code, plus a counter: a sustained run of
+            # these is the one signal that separates a replay attack from a
+            # genuine device-side decrease, and DEBUG alone would hide both.
+            self.data.adv_regressions += len(skipped)
+            _LOGGER.debug(
+                "OneMeter %s: ignoring passive regression(s) for %s",
+                self.address, ", ".join(format_obis(o) for o in sorted(skipped)),
+            )
+            for obis in sorted(skipped):
+                if obis not in self._regression_warned:
+                    self._regression_warned.add(obis)
+                    _LOGGER.warning(
+                        "OneMeter %s: a passive value for %s was below the cached one "
+                        "and was ignored — either a replayed advertisement or the device "
+                        "genuinely decreased it; the next active session settles which. "
+                        "(Ignored values so far this run: see the adv_regressions counter.)",
+                        self.address, format_obis(obis),
+                    )
+        for obis, value in accepted.items():
+            self.data.cached_obis_by_code[obis] = ObisEntry(
+                obis=obis, value=value, raw=obis + value.to_bytes(4, "little")
+            )
+            _LOGGER.debug(
+                "OneMeter %s: passive OBIS %s = %d", self.address, format_obis(obis), value
+            )
 
     # --- Coordinator protocol -----------------------------------------------
 
@@ -257,10 +562,54 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
         backoff = 1.0
         while not self._stop.is_set():
             self._wake_now.clear()
+            force_active = self._force_active_once
+            self._force_active_once = False
+
+            # Everything about "should we touch the radio this iteration" lives
+            # in policy.next_action so it can be unit-tested — see the module
+            # docstring there for why each branch is ordered the way it is.
+            action, wait_s = policy.next_action(
+                passive_enabled=self.passive_enabled,
+                passive_fresh=self._passive_is_fresh(),
+                since_last_session_s=(
+                    time.monotonic() - self._last_active_session_at
+                    if self._last_active_session_at is not None
+                    else math.inf
+                ),
+                force_active=force_active,
+                # A failed attempt is never deferred by the poll interval: the
+                # two-phase wait below already spaced it by the backoff or the
+                # rejection floor. See policy.next_action.
+                last_attempt_failed=self._last_session_failed,
+                poll_interval_s=self._poll_interval_s,
+                max_passive_gap_s=PASSIVE_MAX_SESSION_GAP_S,
+                passive_wait_s=PASSIVE_WAIT_S,
+            )
+            if action is policy.Action.PASSIVE:
+                self._set_state(ConnState.PASSIVE)
+                _LOGGER.debug(
+                    "OneMeter %s: passive data is current — staying off the GATT link",
+                    self.address,
+                )
+            elif action is policy.Action.WAIT:
+                _LOGGER.debug(
+                    "OneMeter %s: next active session in %.0fs (broadcast quiet, "
+                    "poll interval not elapsed)",
+                    self.address, wait_s,
+                )
+            if action is not policy.Action.SESSION:
+                if await self._interruptible_wait(wait_s):
+                    return
+                continue
+
             session_ok = False
+            self._in_session = True
             try:
                 await self._connect_and_run_session()
                 session_ok = True
+                self._last_active_session_at = time.monotonic()
+                # Current values now come from the session, not the broadcast.
+                self.data.data_source = "active"
                 backoff = 1.0  # successful session resets backoff
             except asyncio.CancelledError:
                 raise
@@ -268,6 +617,8 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
                 _LOGGER.debug("OneMeter %s: session error: %s", self.address, exc)
                 self._set_state(ConnState.DISCONNECTED)
             finally:
+                self._in_session = False
+                self._last_session_failed = not session_ok
                 await self._safe_disconnect()
 
             # Two-phase wait:
@@ -309,19 +660,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
             if remaining_s > 0:
                 if session_ok:
                     self._set_state(ConnState.SLEEPING)
-                stop_task = self.hass.async_create_task(self._stop.wait())
-                wake_task = self.hass.async_create_task(self._wake_now.wait())
-                try:
-                    await asyncio.wait(
-                        {stop_task, wake_task},
-                        timeout=remaining_s,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                finally:
-                    for t in (stop_task, wake_task):
-                        if not t.done():
-                            t.cancel()
-                if self._stop.is_set():
+                if await self._interruptible_wait(remaining_s):
                     return
 
     async def _connect_and_run_session(self) -> None:
@@ -596,18 +935,13 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
             self._last_ack_cmd = 0x21
             # Verbose per-entry logging so we can correlate against the
             # meter's display when first attaching one. Each ObisEntry is
-            # 4 bytes of OBIS code + u32 LE value; we attempt to render
-            # the 4 bytes as A.B.C.D for readability.
+            # 4 bytes of OBIS code + u32 LE value; we render the 4 bytes
+            # as A.B.C.D for readability.
             for ent in event:
-                obis_bytes = ent.obis
-                obis_str = (
-                    f"{obis_bytes[0]}.{obis_bytes[1]}.{obis_bytes[2]}.{obis_bytes[3]}"
-                    if len(obis_bytes) == 4 else obis_bytes.hex()
-                )
                 sentinel = ent.value == 0xFFFFFFFF
                 _LOGGER.info(
                     "OneMeter %s: cached OBIS entry  raw=%s  A.B.C.D=%s  value=%s",
-                    self.address, ent.raw.hex(), obis_str,
+                    self.address, ent.raw.hex(), format_obis(ent.obis),
                     "no-value (0xFFFFFFFF)" if sentinel else f"{ent.value} (0x{ent.value:08X})",
                 )
         elif isinstance(event, AutoDetectResult):
@@ -726,6 +1060,45 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
         self._disconnected_event.set()
 
     # --- Helpers -------------------------------------------------------------
+
+    async def _interruptible_wait(self, timeout_s: float) -> bool:
+        """Sleep up to `timeout_s`, waking early on stop or a manual request.
+
+        Returns True when the coordinator is shutting down, so callers can
+        return straight out of the run loop.
+        """
+        if timeout_s <= 0:
+            return self._stop.is_set()
+        stop_task = self.hass.async_create_task(self._stop.wait())
+        wake_task = self.hass.async_create_task(self._wake_now.wait())
+        try:
+            await asyncio.wait(
+                {stop_task, wake_task},
+                timeout=timeout_s,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for t in (stop_task, wake_task):
+                if not t.done():
+                    t.cancel()
+        return self._stop.is_set()
+
+    def _passive_is_fresh(self) -> bool:
+        """True while the broadcast is still delivering register records.
+
+        The stamp is only ever set where records actually arrived, so a device
+        that falls back to emitting just the 9-byte clock-only advert drops out
+        of freshness after PASSIVE_FALLBACK_S and the active path resumes. That
+        *mixed* case is the one that matters — a device that emitted a data
+        advert once and then went quiet must not latch the gate open.
+        """
+        if not self.passive_enabled or self._passive_data_at is None:
+            return False
+        return policy.is_fresh(
+            stamp=self._passive_data_at,
+            now=time.monotonic(),
+            window_s=PASSIVE_FALLBACK_S,
+        )
 
     async def _safe_disconnect(self) -> None:
         """Disconnect and verify the proxy actually closed the link.

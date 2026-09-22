@@ -32,10 +32,13 @@ Usage:
                  -f target/nrf51.cfg
     3. Run this script (no arguments needed in the common case).
 
-The script halts the CPU, reads three values:
+The script halts the CPU and reads these values:
   - FICR DEVICEADDR (BLE MAC) — to confirm you're talking to the right device
-  - mobKey  (16 bytes at flash 0x3F024)
-  - IV      (16 bytes at flash 0x3F034)
+  - mobKey  (16 bytes at flash 0x3F024)  — required by the integration
+  - IV      (16 bytes at flash 0x3F034)  — required by the integration
+  - the broadcast key/IV pair (0x3F044 / 0x3F054) — optional; only needed for
+    the integration's passive-reading feature, and a device without it still
+    works normally over GATT
 …and prints them. Halts are short and the script resumes the CPU before
 exiting.
 
@@ -47,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import socket
 import sys
@@ -61,6 +65,13 @@ PROMPT = b"> "
 # nRF51822 flash offsets (per our analysed firmware)
 FLASH_MOBKEY_OFFSET = 0x0003F024  # 16 bytes — AES-128 key
 FLASH_IV_OFFSET     = 0x0003F034  # 16 bytes — initial cleartext / IV
+# The advertisement broadcast (passive reading) uses a second AES-CCM key pair,
+# stored immediately after mobKey/IV in the same configuration page. It is
+# unrelated to the GATT session cipher above; the integration only needs it for
+# the optional passive-reading feature, and a device without it still works
+# exactly as before over GATT.
+FLASH_PASSIVE_KEY_OFFSET = 0x0003F044  # 16 bytes — broadcast AES-128 key
+FLASH_PASSIVE_IV_OFFSET  = 0x0003F054  # 16 bytes — broadcast IV / CCM nonce
 
 # FICR (factory information, unprotected — readable via plain mdw)
 FICR_DEVICEADDRTYPE = 0x100000A0  # 4 bytes
@@ -218,6 +229,14 @@ def main() -> int:
                    help=f"Flash offset of mobKey (default: 0x{FLASH_MOBKEY_OFFSET:x})")
     p.add_argument("--iv-offset", type=lambda x: int(x, 0), default=FLASH_IV_OFFSET,
                    help=f"Flash offset of IV (default: 0x{FLASH_IV_OFFSET:x})")
+    p.add_argument("--passive-key-offset", type=lambda x: int(x, 0),
+                   default=FLASH_PASSIVE_KEY_OFFSET,
+                   help="Flash offset of the broadcast key "
+                        f"(default: 0x{FLASH_PASSIVE_KEY_OFFSET:x})")
+    p.add_argument("--passive-iv-offset", type=lambda x: int(x, 0),
+                   default=FLASH_PASSIVE_IV_OFFSET,
+                   help="Flash offset of the broadcast IV "
+                        f"(default: 0x{FLASH_PASSIVE_IV_OFFSET:x})")
     p.add_argument("--json", action="store_true",
                    help="Emit the result as a single JSON object on stdout instead of text.")
     p.add_argument("--output", type=Path, default=None,
@@ -274,8 +293,32 @@ def main() -> int:
             sock, args.iv_offset, 16, args.gadget_pc, args.gadget_reg
         )
 
-        # Plausibility sanity checks
+        # The broadcast pair lives in the same page. Read it with the same
+        # gadget, but treat a failure as non-fatal: the GATT credentials above
+        # are what the integration fundamentally needs, and a device whose
+        # broadcast pair is unprogrammed simply can't do passive reading.
+        print(f"reading broadcast key/IV (16 B each @ 0x{args.passive_key_offset:08x} "
+              f"/ 0x{args.passive_iv_offset:08x})…", file=sys.stderr)
+        try:
+            passive_key = read_block_via_gadget(
+                sock, args.passive_key_offset, 16, args.gadget_pc, args.gadget_reg
+            )
+            passive_iv = read_block_via_gadget(
+                sock, args.passive_iv_offset, 16, args.gadget_pc, args.gadget_reg
+            )
+        except OpenOCDError as exc:
+            print(f"WARNING: broadcast key/IV read failed ({exc}). The GATT "
+                  f"credentials above are still valid; passive reading will be "
+                  f"unavailable for this device.", file=sys.stderr)
+            passive_key = passive_iv = None
+
+        # Plausibility sanity checks. `warnings` are problems with the
+        # credentials the integration *requires* (they set a non-zero exit);
+        # `advisories` are notes about the optional broadcast pair, which must
+        # not make a successful mobKey/IV extraction look like a failure to a
+        # scripted caller.
         warnings: list[str] = []
+        advisories: list[str] = []
         if mobkey == b"\xff" * 16:
             warnings.append(
                 "mobKey is all-0xFF — flash slot is unprogrammed. "
@@ -289,6 +332,16 @@ def main() -> int:
                 "Bypass-gadget reads may be silently failing; "
                 "double-check the gadget PC/register."
             )
+        if passive_key is None or passive_iv is None:
+            advisories.append(
+                "Broadcast key/IV could not be read — the optional passive "
+                "reading feature won't work, everything else is unaffected."
+            )
+        elif passive_key == b"\xff" * 16 or passive_iv == b"\xff" * 16:
+            advisories.append(
+                "Broadcast key/IV is all-0xFF — this device has no passive "
+                "reading pair; the integration will read everything over GATT."
+            )
 
         result = {
             "ble_mac": ble_mac,
@@ -297,7 +350,12 @@ def main() -> int:
             "iv_hex": iv.hex(),
             "mobkey_offset": f"0x{args.mobkey_offset:08x}",
             "iv_offset": f"0x{args.iv_offset:08x}",
+            "passive_key_hex": passive_key.hex() if passive_key else None,
+            "passive_iv_hex": passive_iv.hex() if passive_iv else None,
+            "passive_key_offset": f"0x{args.passive_key_offset:08x}",
+            "passive_iv_offset": f"0x{args.passive_iv_offset:08x}",
             "warnings": warnings,
+            "advisories": advisories,
         }
 
         if args.json:
@@ -313,19 +371,47 @@ def main() -> int:
             print(f"mobKey (hex) : {mobkey.hex()}")
             print(f"IV     (hex) : {iv.hex()}")
             print()
+            print("Optional — enables passive (broadcast) reading:")
+            if passive_key and passive_iv:
+                print(f"passive key  : {passive_key.hex()}")
+                print(f"passive IV   : {passive_iv.hex()}")
+            else:
+                print("  (not available on this device)")
+            print()
             if warnings:
                 print("WARNINGS:")
                 for w in warnings:
                     print(f"  - {w}")
                 print()
+            if advisories:
+                print("NOTES (not an error):")
+                for a in advisories:
+                    print(f"  - {a}")
+                print()
             print("Copy the BLE MAC, mobKey, and IV into the integration's")
-            print("config flow. These bytes are sensitive — treat them like a")
-            print("password.")
+            print("config flow. The passive pair is optional — it goes in the")
+            print("passive key/IV fields. These bytes are sensitive — treat")
+            print("them like a password.")
             print()
 
         if args.output:
-            args.output.write_text(json.dumps(result, indent=2))
-            print(f"wrote JSON to {args.output}", file=sys.stderr)
+            # These are credentials, so the file must not be group/world
+            # readable. O_CREAT applies its mode only when the file is *created*,
+            # so an existing file (e.g. one written 0644 by an older version of
+            # this tool) has to be re-permissioned explicitly — and the message
+            # reports the mode actually in effect, not the one requested.
+            # O_NOFOLLOW refuses to write through a symlink planted at the path.
+            payload = json.dumps(result, indent=2)
+            fd = os.open(
+                args.output,
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                0o600,
+            )
+            with os.fdopen(fd, "w") as fh:
+                os.fchmod(fd, 0o600)
+                fh.write(payload)
+            mode = os.stat(args.output).st_mode & 0o777
+            print(f"wrote JSON to {args.output} (mode {mode:04o})", file=sys.stderr)
 
         if warnings:
             return 1
