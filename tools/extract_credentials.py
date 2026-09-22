@@ -39,8 +39,14 @@ The script halts the CPU and reads these values:
   - the broadcast key/IV pair (0x3F044 / 0x3F054) — optional; only needed for
     the integration's passive-reading feature, and a device without it still
     works normally over GATT
-…and prints them. Halts are short and the script resumes the CPU before
-exiting.
+…and prints them.
+
+After a gadget read the script deliberately leaves the CPU **halted**: the
+bypass gadget writes PC without saving the application's execution point, so
+`resume` would continue from the gadget (or from wherever the last `step` left
+it) and run garbage — which is how this tool used to fault devices. Power-cycle
+the board afterwards, which you need anyway: an SWD halt also stops it
+advertising over BLE until then.
 
 It does not write to the device. It does not modify flash. It is purely
 a read-out tool.
@@ -89,10 +95,37 @@ DEFAULT_GADGET_REG = "r4"   # the script loads target addr into this reg and
 VERIFY_READS = 2
 # Retries per word before giving up
 MAX_RETRIES = 3
+# Pause between read attempts. `step` resumes the core for one instruction and
+# the halt that ends it lands asynchronously, so retrying instantly just re-hits
+# the same window.
+RETRY_SETTLE_S = 0.2
+# How long to wait for that halt to land after a `step`, and how often to ask.
+WAIT_HALT_TIMEOUT_S = 2.0
+WAIT_HALT_POLL_S = 0.05
+
+# Set the moment a gadget read writes PC, and never cleared. The gadget saves no
+# context, so from then on the core's original execution point is gone and the
+# device must not be resumed — the cleanup path reads this to decide between
+# resuming and leaving the target halted with an explanation.
+_pc_hijacked = False
 
 
 class OpenOCDError(RuntimeError):
     pass
+
+
+def _should_resume(*, pc_hijacked: bool, no_resume_flag: bool) -> bool:
+    """Whether the cleanup path is allowed to resume the CPU.
+
+    Only when a gadget read never took over PC. Resuming a hijacked core
+    continues from the gadget (or wherever the last `step` left it) rather than
+    from the application, which runs garbage. `--no-resume` is kept as an
+    accepted legacy no-op now that leaving the target halted is unconditional.
+
+    Pure and split out so the rule can be tested without a debugger — it is the
+    rule whose absence used to fault devices (see tests/test_extract_gadget.py).
+    """
+    return not pc_hijacked and not no_resume_flag
 
 
 def _connect(host: str, port: int) -> socket.socket:
@@ -139,6 +172,45 @@ def read_word_direct(sock: socket.socket, addr: int) -> int:
     return int(m.group(1), 16)
 
 
+def _target_is_halted(targets_output: str) -> bool:
+    """True when openocd's `targets` listing reports a halted target.
+
+    The listing is a header row plus one row per target, whose last field is the
+    state word; anything else (an error reply, or the header alone) is not a
+    halt. Split out as a pure function so it can be unit-tested without a device
+    — see tests/test_extract_gadget.py.
+    """
+    for line in targets_output.splitlines():
+        fields = line.split()
+        if fields and fields[-1] == "halted":
+            return True
+    return False
+
+
+def _wait_halted(sock: socket.socket) -> None:
+    """Block until openocd reports the target halted.
+
+    `step` resumes the core for a single instruction and the halt that ends it
+    lands asynchronously. A register read issued straight afterwards can catch
+    the target still running, and openocd then answers "Could not read register
+    'r4'" — which fails the whole extraction. This is exactly why the manual
+    workaround (typing the same commands by hand) worked while the script did
+    not: a human leaves about a second between commands, a socket leaves
+    microseconds.
+    """
+    deadline = time.time() + WAIT_HALT_TIMEOUT_S
+    while True:
+        state = _tncmd(sock, "targets")
+        if _target_is_halted(state):
+            return
+        if time.time() >= deadline:
+            raise OpenOCDError(
+                f"target did not halt within {WAIT_HALT_TIMEOUT_S:.1f}s of `step` "
+                f"(last state: {state.strip()!r})"
+            )
+        time.sleep(WAIT_HALT_POLL_S)
+
+
 def read_word_via_gadget(
     sock: socket.socket, addr: int, gadget_pc: int, gadget_reg: str
 ) -> int:
@@ -149,12 +221,18 @@ def read_word_via_gadget(
     register to the target address, then single-stepping, leaks one
     word into the same register.
 
-    This call DOES NOT preserve the CPU's prior PC/register state.
-    Only safe to call when the CPU is halted at reset / known-idle.
+    This call DOES NOT preserve the CPU's prior PC/register state, and nothing
+    restores it afterwards — see `_pc_hijacked`. Only safe to call when the CPU
+    is halted at reset / known-idle.
     """
+    global _pc_hijacked
+    # Set before the write so a failure part-way through is covered too: from
+    # this point the core must not be resumed.
+    _pc_hijacked = True
     _tncmd(sock, f"reg pc 0x{gadget_pc:x}")
     _tncmd(sock, f"reg {gadget_reg} 0x{addr:x}")
     _tncmd(sock, "step")
+    _wait_halted(sock)
     resp = _tncmd(sock, f"reg {gadget_reg}")
     matches = _HEX_RE.findall(resp)
     if len(matches) != 1:
@@ -167,17 +245,30 @@ def read_word_via_gadget(
 def read_word_verified(
     sock: socket.socket, addr: int, gadget_pc: int, gadget_reg: str
 ) -> int:
-    """Read a word VERIFY_READS times and require agreement; retry up to MAX_RETRIES."""
-    for _attempt in range(MAX_RETRIES):
-        reads = [
-            read_word_via_gadget(sock, addr, gadget_pc, gadget_reg)
-            for _ in range(VERIFY_READS)
-        ]
+    """Read a word VERIFY_READS times and require agreement; retry up to MAX_RETRIES.
+
+    A failure inside an attempt is retried rather than propagated: one transient
+    refusal used to abort the whole 16-byte block, and then the entire run.
+    """
+    last_reads: list[int] = []
+    last_error: Exception | None = None
+    for attempt in range(MAX_RETRIES):
+        if attempt:
+            time.sleep(RETRY_SETTLE_S)
+        try:
+            reads = [
+                read_word_via_gadget(sock, addr, gadget_pc, gadget_reg)
+                for _ in range(VERIFY_READS)
+            ]
+        except OpenOCDError as exc:
+            last_error = exc
+            continue
         if len(set(reads)) == 1:
             return reads[0]
+        last_reads = reads
     raise OpenOCDError(
-        f"could not get {VERIFY_READS} agreeing reads at 0x{addr:08x} "
-        f"after {MAX_RETRIES} attempts (last reads: {reads})"
+        f"could not get {VERIFY_READS} agreeing reads at 0x{addr:08x} after "
+        f"{MAX_RETRIES} attempts (last reads: {last_reads}, last error: {last_error})"
     )
 
 
@@ -244,7 +335,9 @@ def main() -> int:
     p.add_argument("--skip-reset", action="store_true",
                    help="Don't issue 'reset halt' first. Use if the device is already halted.")
     p.add_argument("--no-resume", action="store_true",
-                   help="Leave the CPU halted on exit (debug aid).")
+                   help="Accepted for backwards compatibility. The CPU is now always "
+                        "left halted after a gadget read, because resuming from a "
+                        "hijacked PC is unsafe (see the module docstring).")
     args = p.parse_args()
 
     print(f"connecting to OpenOCD at {args.host}:{args.port}…", file=sys.stderr)
@@ -418,8 +511,23 @@ def main() -> int:
         return 0
     finally:
         try:
-            if not args.no_resume:
+            if _should_resume(pc_hijacked=_pc_hijacked, no_resume_flag=args.no_resume):
                 _tncmd(sock, "resume")
+            if _pc_hijacked:
+                # Deliberately NOT resuming. The gadget writes PC without saving
+                # the application's context, so `resume` would continue from the
+                # gadget (or from wherever the last `step` left it) and run
+                # garbage — that is how this tool used to fault devices. Leaving
+                # the core halted is the safe end state.
+                print(
+                    "\nNOTE: the CPU has been left halted on purpose — the bypass "
+                    "gadget does not restore the application's execution point, so "
+                    "resuming it would run garbage and can fault the device.\n"
+                    "Power-cycle the board (on most setups: disconnect and reconnect "
+                    "the clamp) to resume normal operation. Until you do, it will not "
+                    "advertise over BLE.",
+                    file=sys.stderr,
+                )
             sock.close()
         except Exception:  # pragma: no cover — best-effort cleanup
             pass

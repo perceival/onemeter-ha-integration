@@ -149,7 +149,11 @@ The script:
   (mobKey) and 16 bytes at `0x0003F034` (IV), plus the broadcast pair at
   `0x0003F044`/`0x0003F054` (optional — a failed read there is a warning,
   not an error).
-- Resumes the CPU and exits.
+- Leaves the CPU **halted** and exits. It deliberately does not resume: the
+  bypass gadget writes PC without saving the application's execution point, so
+  `resume` would continue from the gadget (or from wherever the last `step`
+  left it) rather than from the app, which runs garbage and can fault the
+  device. See the power-cycle note below.
 
 A successful run prints something like:
 
@@ -171,6 +175,12 @@ Copy the BLE MAC, mobKey, and IV into the integration's config flow. The
 passive pair is optional — it goes in the passive key/IV fields. These
 bytes are sensitive — treat them like a password.
 ```
+
+**Power-cycle the board when the script finishes.** An SWD halt stops the
+device advertising over BLE, and the script leaves it halted on purpose (see
+above), so it stays dark until you power-cycle it — on most setups that means
+disconnecting and reconnecting the clamp, or pulling and reseating the battery.
+A device left halted is harmless; a resumed one with a hijacked PC is not.
 
 Cross-check the BLE MAC against the sticker on the device (or against
 what your phone's BLE scanner shows). If they match, the read is
@@ -201,10 +211,14 @@ The script accepts a few flags for non-default setups:
 --gadget-reg REG       Override the gadget register name (default r4)
 --mobkey-offset HEX    Override the mobKey flash offset (default 0x3f024)
 --iv-offset HEX        Override the IV flash offset (default 0x3f034)
+--passive-key-offset HEX  Override the broadcast key offset (default 0x3f044)
+--passive-iv-offset HEX   Override the broadcast IV offset (default 0x3f054)
 --json                 Emit a single JSON object instead of a human report
---output FILE          Also write the JSON output to FILE
+--output FILE          Also write the JSON output to FILE (created 0600, since
+                       it holds credentials)
 --skip-reset           Don't issue 'reset halt' first (use if device already halted)
---no-resume            Leave the CPU halted on exit (debug aid)
+--no-resume            Accepted for backwards compatibility; has no effect now
+                       that the CPU is always left halted
 ```
 
 Exit codes:
@@ -258,6 +272,20 @@ the short version:
    received the loaded value.
 5. Pass those to the extractor via `--gadget-pc` and `--gadget-reg`.
 
+### "Could not read register 'r4'"
+
+OpenOCD reporting this mid-run means the register read raced the halt that ends
+`step` — the core was still running when the read was issued. `step` completes
+asynchronously, and over a socket the next command arrives microseconds later,
+which is exactly why typing the same four commands by hand always worked while
+the script did not.
+
+The script now waits for the target to report `halted` after every `step`, and
+retries a failed read instead of aborting the whole block, so this should no
+longer appear. If it still does, the target is unusually slow to halt: raise
+`WAIT_HALT_TIMEOUT_S` near the top of the script, and check that nothing else is
+holding the debug link.
+
 ### "I keep getting different values for the same address"
 
 The bypass gadget is single-step-flaky: each read has a small chance
@@ -298,9 +326,9 @@ and `--iv-offset` and re-run the extractor.
 - It does not modify the device. No flash writes, no UICR changes.
 - It does not unlock APPROTECT permanently or alter the chip's
   security state.
-- It does not extract anything beyond the BLE MAC, device ID, mobKey,
-  and IV. If you want a full FICR/UICR/peripheral dump, use the
-  upstream
+- It does not extract anything beyond the BLE MAC, device ID, mobKey, IV, and
+  the optional broadcast key/IV. If you want a full FICR/UICR/peripheral dump,
+  use the upstream
   [nrf51-extractor](https://github.com/grappeq/nrf51-extractor)
   directly.
 
