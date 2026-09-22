@@ -291,7 +291,8 @@ holding the debug link.
 
 ### "The backup copy of the identity block holds DIFFERENT credentials"
 
-The identity block is stored twice, `0x00000C00` apart. The firmware reads the
+The identity block is stored twice, `0x00000C00` apart — the whole page,
+including the broadcast key/IV (`0x0003FC44`). The firmware reads the
 **primary** (`0x0003F024`), which is what the script reports, so the values are
 correct — but the second copy is not kept in sync, and on a unit whose identity
 was ever rewritten by writing only the primary (e.g. reflashed with another
