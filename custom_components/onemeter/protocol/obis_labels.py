@@ -27,11 +27,11 @@ Only codes with evidence behind the name belong here. The evidence, by group:
   (`obis_map.py`): the two vocabularies name the same registers.
 * `0.0.9.1` / `0.0.9.2` are the generic time and date objects: "current time" and
   "current date" in the OMS OBIS annex, and "Aktualny czas zegara" / "Aktualna
-  data" for these two codes in Apator's manual for the NORAX 3D, one of the
-  variants of the NORAX 3 family this codebase documents (`obis_map.py`). The
-  *pairing* is both the standard's and the vendor's; the value encoding these two
-  carry on this meter is not decoded, so their raw sensors must not be read as
-  timestamps.
+  data" for these two codes in Apator's manual for the NORAX 3D (read as a copy
+  republished by a German DSO), one of the variants of the NORAX 3 family this
+  codebase documents (`obis_map.py`). The *pairing* is both the standard's and
+  the vendor's; the value encoding these two carry on this meter is not decoded,
+  so their raw sensors must not be read as timestamps.
 * `255.1.1.x`: OBIS reserves an A field of 255 for the meter vendor
   (`obis_map.py`'s own wording is "vendor-specific OBIS A-field"), so that is the
   strongest claim that is true of them — the tags identify *which* fields they
