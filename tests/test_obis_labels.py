@@ -33,6 +33,8 @@ EXPECTED = {
     bytes([0, 4, 8, 1]): "reactive energy returned, tariff 1",
     bytes([0, 4, 8, 2]): "reactive energy returned, tariff 2",
     bytes([0, 15, 8, 4]): "active energy, tariff 4",
+    bytes([0xFF, 1, 1, 6]): "device time, quarter-hours",
+    bytes([0xFF, 1, 1, 10]): "device clock, unix time",
     bytes([0xFF, 1, 1, 11]): "vendor-specific field",
     bytes([0xFF, 1, 1, 14]): "vendor-specific field",
 }

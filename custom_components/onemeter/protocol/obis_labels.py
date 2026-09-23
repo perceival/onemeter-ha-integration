@@ -29,25 +29,53 @@ Only codes with evidence behind the name belong here. The evidence, by group:
   "current date" in the OMS OBIS annex, and "Aktualny czas zegara" / "Aktualna
   data" for these two codes in Apator's manual for the NORAX 3D (read as a copy
   republished by a German DSO at rheinnetz.de), one of the variants of the
-  NORAX 3 family this codebase documents (`obis_map.py`). The *pairing* is both
-  the standard's and the vendor's; the value encoding these two carry on this
-  meter is not decoded, so their raw sensors must not be read as timestamps.
-* `255.1.1.x`: OBIS reserves an A field of 255 for the meter vendor
-  (`obis_map.py`'s own wording is "vendor-specific OBIS A-field"), so that is the
-  strongest claim that is true of them — the tags identify *which* fields they
-  are, not what the values mean.
+  NORAX 3 family this codebase documents (`obis_map.py`). What is measured about
+  them: `0.0.9.1` counts **seconds within a day** — its delta equals the elapsed
+  time modulo 86,400, to one second of rounding — and `0.0.9.2` is a **packed day
+  counter** that steps by 16 once a day while keeping a constant low nibble, so it
+  advances one day per step. Which midnight `0.0.9.1`'s cycle starts at is *not*
+  established by the measurement (local time versus the meter's own timebase), and
+  `0.0.9.2`'s packing is inferred from those two facts rather than proven: if the
+  low nibble is filler, dividing it out puts day 0 at a date that is not a round
+  calendar date, which is what a per-device origin (commissioning) looks like. Its
+  count and that date are deliberately not published. Neither raw sensor is a
+  timestamp: together they give the meter's clock, but the date register only
+  moves once a day.
+* `255.1.1.x` is the vendor's own namespace (OBIS reserves an A field of 255 for
+  the meter vendor; `obis_map.py`'s wording is "vendor-specific OBIS A-field").
+  Measured behaviour splits it rather than confirming one purpose.
+  `255.1.1.10` is the **device's clock in unix seconds**: it advances exactly one
+  tick per second, its delta between two samples matches the interval to the
+  second, its magnitude is epoch-class, and against the recorder's own timestamps
+  its offset bottoms out at about a minute (the spread being the age of the last
+  meter read) — so it is a true unix stamp, not a clock kept in local time.
+  `255.1.1.6` is the same clock in coarser granularity: 16 bits of
+  **quarter-hours**, established by its offset from `255.1.1.10 // 900` staying
+  constant across the observation — which rules out a counter that drifts or
+  skips relative to wall time, and leaves elapsed time, though a window with no
+  failed read cannot distinguish a perfectly regular event counter. That constant
+  offset is *not* zero, so only its deltas convert to time, never its absolute
+  value; and being 16 bits wide it wraps about every 682 days.
+  `.11`/`.14` are the two vendor fields the broadcast carries that still have no
+  identified meaning (tags `0x56`/`0x57`) — they move with it, `.11` packed with a
+  constant low nibble, the same pattern as `0.0.9.2`. `.7`, `.17` and `.19` did not
+  move within the 29.9-hour single-device series, which is not proof of a constant
+  but is the reason they carry no name; a cross-unit comparison would not be
+  evidence for these either way, since two devices' counters are independent.
 
 Deliberately absent — `1.67.1.0`: the C value 67 is not one this project can
-place, and the register's value runs far above anything the measurement registers
-carry here, which reads as an identifier or a counter rather than a measurement.
-A guess in the entity name would be worse than showing the bare code.
+place, its value runs far above anything the measurement registers carry here, and
+it stayed identical across two observation windows spanning days as well as on a
+second device — which is what a firmware or configuration constant looks like, not
+a measurement. A guess in the entity name would be worse than showing the bare
+code.
 """
 from __future__ import annotations
 
 OBIS_LABELS: dict[bytes, str] = {
     # The meter's own clock, not the OneMeter's (that is a separate sensor, and
-    # the only *clock* whose state is a timestamp). See the module docstring: the
-    # register identity is the vendor's, its value encoding is undecoded.
+    # the only *clock* whose state is a timestamp). See the module docstring:
+    # `.1` counts seconds within a day, `.2` is a packed day counter.
     bytes([0, 0, 9, 1]): "meter clock, time",
     bytes([0, 0, 9, 2]): "meter clock, date",
     # Energy, by direction and tariff slot. `.0` is the family total and has a
@@ -67,7 +95,10 @@ OBIS_LABELS: dict[bytes, str] = {
     # energy). It simply has no descriptor of its own yet — the tariffs already
     # supported are the ones a Polish supply uses.
     bytes([0, 15, 8, 4]): "active energy, tariff 4",
-    # Vendor-reserved A field — see the module docstring.
+    # Vendor-reserved A field — see the module docstring for what is measured
+    # about each of these.
+    bytes([0xFF, 1, 1, 6]): "device time, quarter-hours",
+    bytes([0xFF, 1, 1, 10]): "device clock, unix time",
     bytes([0xFF, 1, 1, 11]): "vendor-specific field",
     bytes([0xFF, 1, 1, 14]): "vendor-specific field",
 }

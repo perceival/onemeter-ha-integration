@@ -291,8 +291,9 @@ Passive reading is deliberately partial:
 - **What the broadcast carries:** three tagged register records plus the
   device's own clock. Four energy registers are identified so far — active
   consumed and returned (`0.1.8.0`, `0.2.8.0`) and reactive consumed and
-  returned (`0.3.8.0`, `0.4.8.0`) — plus two vendor counters. A few tags seen
-  on real hardware still have no OBIS mapping — those are kept raw in the
+  returned (`0.3.8.0`, `0.4.8.0`) — plus two vendor fields whose only name is
+  "vendor-specific field". A few tags seen on real hardware still have no OBIS
+  mapping — those are kept raw in the
   [diagnostics](#diagnostics) dump and are not turned into entities.
 - **What it does not carry:** battery voltage, comm stats, identity, FS
   params, and most of the 29-register cached-OBIS set. Those still require a

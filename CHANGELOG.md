@@ -35,12 +35,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cross-referencing a code table. Codes we have *not* identified stay a bare
   `A.B.C.D`, because a label is a claim about what a register is. Labels cover
   the four energy families with their tariff slots, the meter-reading family's
-  tariff-4 slot, the meter's own time and date registers, and OBIS's
-  vendor-reserved `255.1.1.x` pair; the energy names follow the Polish market's
-  data-type catalogue (PSE), which calls the reactive pair "consumed"/"returned"
-  rather than "inductive"/"capacitive" — that wording belongs to its quadrant
-  codes. Note the label is part of the entity name, so a newly created entity's
-  id includes it.
+  tariff-4 slot, the meter's own time and date registers, and four of the
+  vendor-reserved `255.1.1.x` fields — `.6` and `.10` named from measured
+  behaviour, `.11`/`.14` kept deliberately unnamed ("vendor-specific field")
+  because the broadcast's timing was not enough to say what they carry: `.10`
+  advances exactly one tick per second with an epoch-class magnitude, so it is the
+  device's own clock; `.6` is that clock in 16 bits of quarter-hours, which its
+  constant (non-zero) offset from `.10 // 900` establishes — so its deltas convert
+  to time, its absolute value does not; `.11`/`.14` move with the broadcast and
+  stop there. The meter's clock pair is measured the same way:
+  `0.0.9.1` counts seconds within a day, `0.0.9.2` is a packed day counter that
+  steps once a day. The energy names follow the Polish market's data-type
+  catalogue (PSE), which calls the reactive pair "consumed"/"returned" rather than
+  "inductive"/"capacitive" — that wording belongs to its quadrant codes. Codes
+  that did not move within the observations made here, `1.67.1.0` among them,
+  stay bare codes, because a label is a claim about what a register is. Note the
+  label is part of the entity name, so a newly created entity's id includes it,
+  while an entity that already existed for one of these codes is renamed on its
+  next state write (its id does not change).
 - `sensor.<name>_cached_registers` — diagnostic entity listing every OBIS
   register the device has reported: the state is how many there are, and the
   attributes map each `A.B.C.D` code to its raw value, including codes that
