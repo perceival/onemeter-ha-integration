@@ -170,6 +170,36 @@ def raw_obis_value(value: int | None) -> int | None:
     return value
 
 
+def session_value(
+    *, live_seen: bool, live: object | None, restored: object | None
+) -> tuple[object | None, str | None]:
+    """The value a session-sourced sensor shows, and where it came from.
+
+    Registers outside the broadcast only reach this runtime through a GATT
+    session (the cached register set, cmd 0x21). A restart empties that cache
+    and a passive install can run hours before its next session, so without a
+    stand-in every restart blanks these sensors. The rule:
+
+    - once this runtime holds an entry for the register, that entry is the
+      truth, even when the device reports it holds no value (`live` None) — a
+      value saved before the restart must never outvote the device;
+    - until then, the value saved at shutdown (`restored`) stands in, labelled
+      "restored" so it can't pass for a fresh reading.
+
+    `live` None with `live_seen` covers both the device's no-value sentinel and
+    a present-but-unparsable value (e.g. an out-of-range timestamp): either way
+    there is no reading to show, so the sensor is unavailable.
+
+    Returns (value, origin); origin is "live" (this runtime's own data, whether
+    from a session or the broadcast), "restored", or None (no value).
+    """
+    if live_seen:
+        return (live, "live") if live is not None else (None, None)
+    if restored is not None:
+        return restored, "restored"
+    return None, None
+
+
 def should_create_raw_obis(
     *,
     obis: bytes,

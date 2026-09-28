@@ -12,6 +12,7 @@ from onemeter.policy import (
     next_action,
     raw_obis_candidates,
     raw_obis_value,
+    session_value,
     should_create_raw_obis,
     should_notify,
 )
@@ -383,3 +384,32 @@ def test_should_create_raw_obis_accepts_a_mapping_for_known_codes():
     assert not should_create_raw_obis(
         obis=bytes([0, 1, 8, 0]), known_codes=known, value=7, added_count=0, limit=64
     )
+
+
+# --- session_value: restoring session-only registers across a restart -----------
+
+def test_before_any_session_the_restored_value_stands_in():
+    assert session_value(live_seen=False, live=None, restored=1234.5) == (1234.5, "restored")
+
+
+def test_before_any_session_without_a_saved_value_there_is_nothing():
+    assert session_value(live_seen=False, live=None, restored=None) == (None, None)
+
+
+def test_a_session_reading_wins_over_the_restored_value():
+    assert session_value(live_seen=True, live=1240.0, restored=1234.5) == (1240.0, "live")
+
+
+def test_the_device_saying_no_value_outvotes_the_restored_value():
+    # once this runtime has the register, the device is the truth - a value saved
+    # before the restart must not resurrect a register the device now leaves empty
+    assert session_value(live_seen=True, live=None, restored=1234.5) == (None, None)
+
+
+def test_zero_is_a_real_restored_value_not_a_missing_one():
+    assert session_value(live_seen=False, live=None, restored=0) == (0, "restored")
+
+
+def test_zero_is_a_real_session_value_not_a_missing_one():
+    assert session_value(live_seen=True, live=0, restored=12.5) == (0, "live")
+

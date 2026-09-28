@@ -5,9 +5,11 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from homeassistant.components.sensor import (
+    RestoreSensor,
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
@@ -27,6 +29,7 @@ from .obis_map import KNOWN_OBIS, ObisDescriptor, scaled_value, to_utc_datetime
 from .policy import (
     raw_obis_candidates,
     raw_obis_value,
+    session_value,
     should_create_raw_obis,
 )
 from .protocol.advert import ADVERT_TAG_OBIS
@@ -414,12 +417,69 @@ class OneMeterSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity):
         return attrs_fn(self.coordinator.data)
 
 
-class OneMeterObisSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity):
+class _SessionRestoreMixin(RestoreSensor):
+    """Keep a session-sourced reading across restarts until the next session.
+
+    The cached register set only refreshes in a GATT session, so after a
+    restart these sensors would sit unavailable for hours on a passive install.
+    The last value saved at shutdown stands in until this runtime receives the
+    register again; `policy.session_value` decides, and the `value_origin`
+    attribute says which one is showing.
+    """
+
+    _restored_value: Any = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_sensor_data()
+        # A saved value is only reused if it still fits this sensor: a later
+        # release may change a descriptor's device_class, unit or scale, and a
+        # mismatched stand-in would fail the state write or show a mis-scaled
+        # number until the next session.
+        if (
+            last is not None
+            and last.native_unit_of_measurement == self.native_unit_of_measurement
+            and self._restore_fits(last.native_value)
+        ):
+            self._restored_value = last.native_value
+
+    def _restore_fits(self, value: Any) -> bool:
+        """Whether a saved value has the type this sensor would produce itself."""
+        raise NotImplementedError
+
+    def _live(self) -> tuple[bool, Any]:
+        """(the coordinator currently holds an entry for the register, its exposable value).
+
+        This is the *current* view only; `_resolved` latches it, see there.
+        """
+        raise NotImplementedError
+
+    def _resolved(self) -> tuple[Any, str | None]:
+        live_seen, live = self._live()
+        if live_seen:
+            # The first live entry retires the stand-in for good. Otherwise a
+            # later readout that omits this code would resurrect the pre-restart
+            # value — for a TOTAL_INCREASING register a backwards step that the
+            # statistics engine books as a meter reset.
+            self._restored_value = None
+        return session_value(live_seen=live_seen, live=live, restored=self._restored_value)
+
+    # `available` / `native_value` are defined on the concrete classes, not
+    # here: CoordinatorEntity precedes this mixin in their MRO and its own
+    # `available` would shadow a definition placed on the mixin.
+
+    def _origin_attrs(self) -> dict[str, Any]:
+        origin = self._resolved()[1]
+        return {"value_origin": origin} if origin else {}
+
+
+class OneMeterObisSensor(CoordinatorEntity[OneMeterCoordinator], _SessionRestoreMixin):
     """Sensor backed by a cached-OBIS entry (cmd 0x21 response).
 
     One instance per `ObisDescriptor` in `obis_map.KNOWN_OBIS`. Looks
     up its value in `coordinator.data.cached_obis_by_code` keyed by
-    the 4-byte OBIS code.
+    the 4-byte OBIS code; the last value is restored across restarts
+    until the next session (see `_SessionRestoreMixin`).
     """
 
     _attr_has_entity_name = True
@@ -446,17 +506,30 @@ class OneMeterObisSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity):
         )
         self._attr_device_info = _device_info(coordinator)
 
+    def _live(self) -> tuple[bool, Any]:
+        entry = self.coordinator.data.cached_obis_by_code.get(self._descriptor.obis)
+        if entry is None:
+            return False, None
+        if entry.value == SENTINEL_NO_VALUE:
+            return True, None
+        return True, scaled_value(self._descriptor, entry.value)
+
+    def _restore_fits(self, value: Any) -> bool:
+        if self._descriptor.device_class == SensorDeviceClass.TIMESTAMP:
+            return isinstance(value, datetime)
+        return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
+
     @property
     def available(self) -> bool:
-        entry = self.coordinator.data.cached_obis_by_code.get(self._descriptor.obis)
-        return entry is not None and entry.value != SENTINEL_NO_VALUE
+        return self._resolved()[0] is not None
 
     @property
     def native_value(self) -> Any:
-        entry = self.coordinator.data.cached_obis_by_code.get(self._descriptor.obis)
-        if entry is None or entry.value == SENTINEL_NO_VALUE:
-            return None
-        return scaled_value(self._descriptor, entry.value)
+        return self._resolved()[0]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        return self._origin_attrs() or None
 
 
 class OneMeterRegisterSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity):
@@ -515,7 +588,7 @@ class OneMeterRegisterTimestampSensor(CoordinatorEntity[OneMeterCoordinator], Se
         return reg.last_seen_at
 
 
-class OneMeterRawObisSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity):
+class OneMeterRawObisSensor(CoordinatorEntity[OneMeterCoordinator], _SessionRestoreMixin):
     """One discovered OBIS register, exposed raw and disabled by default.
 
     Created for codes the device reports that have no descriptor of their own —
@@ -535,11 +608,23 @@ class OneMeterRawObisSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity
     # none: the unit and scale of an unmapped code are unknown, so these values
     # must not feed long-term statistics even when a user enables the entity.
 
-    @property
-    def available(self) -> bool:
+    def _live(self) -> tuple[bool, Any]:
         """Unavailable while the device holds no reading, like the siblings."""
         entry = self.coordinator.data.cached_obis_by_code.get(self._obis)
-        return raw_obis_value(entry.value if entry is not None else None) is not None
+        if entry is None:
+            return False, None
+        return True, raw_obis_value(entry.value)
+
+    def _restore_fits(self, value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    @property
+    def available(self) -> bool:
+        return self._resolved()[0] is not None
+
+    @property
+    def native_value(self) -> int | None:
+        return self._resolved()[0]
 
     def __init__(self, coordinator: OneMeterCoordinator, obis: bytes) -> None:
         super().__init__(coordinator)
@@ -551,11 +636,6 @@ class OneMeterRawObisSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity
         self._has_label = label is not None
         self._attr_name = f"OBIS {format_obis(obis)}" + (f" ({label})" if label else "")
         self._attr_device_info = _device_info(coordinator)
-
-    @property
-    def native_value(self) -> int | None:
-        entry = self.coordinator.data.cached_obis_by_code.get(self._obis)
-        return raw_obis_value(entry.value if entry is not None else None)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -571,4 +651,4 @@ class OneMeterRawObisSensor(CoordinatorEntity[OneMeterCoordinator], SensorEntity
             if self._has_label
             else "raw device units — no scale is known for this code"
         )
-        return {"obis": format_obis(self._obis), "note": note}
+        return {"obis": format_obis(self._obis), "note": note, **self._origin_attrs()}
