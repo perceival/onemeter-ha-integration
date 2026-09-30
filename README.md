@@ -7,23 +7,38 @@ other Home-Assistant-supported Bluetooth adapter), decrypts the
 proprietary protocol, and exposes the device — and when a real meter
 is attached, its meter-register readings — as native HA sensors.
 
-> **Unofficial — not affiliated with OneMeter sp. z o.o.**
+> **Unofficial — not affiliated with OneMeter sp. z o.o.** See
+> [LEGAL.md](LEGAL.md) for the legal notice (Polish and English).
 
-## Backstory
+## About this repository
 
-When OneMeter went bankrupt and turned off their cloud, I got a little
-bit annoyed and decided to build my own integration. It works — but the
-main limitation is that you need to extract your device's AES key + IV
-from its flash over SWD before you can use it. That's definitely not
-super easy for a beginner. A friendlier extraction utility may come
-later; for now SWD is the only path.
+This is a maintained continuation of
+[grappeq/onemeter-ha-integration](https://github.com/grappeq/onemeter-ha-integration),
+the original integration by Kacper Grabowski, released under the MIT
+License. The original author's copyright notice is kept in
+[LICENSE](LICENSE).
+
+It adds, among other things, reading the device's encrypted broadcast
+without connecting to it ([passive reading](#passive-reading-advertisement-broadcast)),
+keeping session-only readings across Home Assistant restarts, labelled
+raw OBIS sensors, and fixes to the credential tooling. See
+[CHANGELOG.md](CHANGELOG.md) for the details.
+
+The original author's backstory:
+
+> When OneMeter went bankrupt and turned off their cloud, I got a little
+> bit annoyed and decided to build my own integration. It works — but the
+> main limitation is that you need to extract your device's AES key + IV
+> from its flash over SWD before you can use it. That's definitely not
+> super easy for a beginner.
 
 ## Status
 
-Pre-MVP, but functional on one tested device. The protocol layer has
-~83 unit tests, and the HA glue has been exercised end-to-end against
-a live device. Per-meter behaviour will vary — see the "Discovering
-your meter's registers" section below.
+Beta. In daily use on a device reading a real residential meter, and
+tested on several more units on the bench. The test suite has 187 unit
+tests, and the Home Assistant side has been exercised end-to-end against
+live devices. Per-meter behaviour will vary — see the "Discovering your
+meter's registers" section below.
 
 ## What you get
 
@@ -138,7 +153,7 @@ correlation.
 ### Manual
 
 ```bash
-git clone https://github.com/grappeq/onemeter-ha-integration.git
+git clone https://github.com/perceival/onemeter-ha-integration.git
 cp -r onemeter-ha-integration/custom_components/onemeter \
       /path/to/your/homeassistant/config/custom_components/
 # restart HA
@@ -196,6 +211,15 @@ broadcast. That ceiling is deliberate: a captured advertisement stays valid
 forever — the CCM nonce is the device's static IV — so without it anyone within
 radio range could replay one every few minutes and keep the integration off the
 link indefinitely.
+
+Values that only a session can refresh — every cached-OBIS sensor (energy,
+power and timestamps) and the raw OBIS sensors — survive a Home Assistant
+restart: the last value saved at shutdown is shown until the next session
+delivers a fresh one. While such a sensor has a value it carries a
+`value_origin` attribute: `restored` until then, `live` afterwards (other
+sensors don't have this attribute). A device report always wins over the
+saved value. Without this, a restart would leave them unavailable for hours
+on a passive install.
 
 `sensor.<name>_data_source` shows which path produced the current values;
 `sensor.<name>_advertisements_decoded` / `_undecodable` and
@@ -401,6 +425,9 @@ Layout:
 - `tests/` — pytest, against synthetic vectors derived from documented
   protocol observations. No live device required for the test suite.
 
-## License
+## License and legal notice
 
-[MIT](LICENSE).
+[MIT](LICENSE). The software comes without warranty; reading credentials
+can leave a device unusable. Use it only on devices you own. The full
+notice, including the interoperability basis this project relies on, is
+in [LEGAL.md](LEGAL.md).

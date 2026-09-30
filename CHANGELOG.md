@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Session-only readings survive a Home Assistant restart. Every cached-OBIS
+  sensor (energy, power, timestamps) and the raw OBIS sensors only refresh in a
+  GATT session, so on a passive install a restart used to leave them
+  unavailable for hours. They now show the value saved at shutdown until the
+  next session delivers a fresh one. While they have a value, a
+  `value_origin` attribute reads `restored` until then and `live` afterwards,
+  and a device report always wins over the saved value.
+- `LEGAL.md`: legal notice in Polish and English — no affiliation with the
+  vendor, the interoperability basis, what the repository does not contain,
+  and the no-warranty terms.
 - Passive reading: the integration can decode the device's broadcast
   advertisements and, while they keep arriving, stay off the GATT link
   entirely instead of running a connect/login/drain session each poll. It
