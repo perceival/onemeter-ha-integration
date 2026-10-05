@@ -16,6 +16,7 @@ import json
 import pathlib
 
 import pytest
+
 from onemeter.protocol.decode import parse_last_obis
 from onemeter.protocol.obis_labels import OBIS_LABELS, label_for
 

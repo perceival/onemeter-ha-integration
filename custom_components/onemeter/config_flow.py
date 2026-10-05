@@ -10,7 +10,7 @@ from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,
 )
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_ADDRESS
 
 from .const import (
@@ -31,7 +31,6 @@ from .const import (
     MIN_POLL_INTERVAL_S,
 )
 from .protocol import commands as proto_cmds
-from homeassistant.config_entries import ConfigEntry, OptionsFlow
 
 PROTOCOL_CHOICES = {
     METER_PROTOCOL_UNCHANGED: "Leave unchanged (don't write to device)",
@@ -135,7 +134,7 @@ class OneMeterConfigFlow(ConfigFlow, domain=DOMAIN):
         self._reauth_entry = None
 
     @staticmethod
-    def async_get_options_flow(config_entry: ConfigEntry) -> "OneMeterOptionsFlow":
+    def async_get_options_flow(config_entry: ConfigEntry) -> OneMeterOptionsFlow:
         return OneMeterOptionsFlow()
 
     # --- Bluetooth discovery -------------------------------------------------

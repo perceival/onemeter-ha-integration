@@ -5,6 +5,7 @@ import struct
 
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
+
 from onemeter.protocol import advert
 
 # Pinned vector: this exact advertisement decrypts to this clock and these

@@ -20,6 +20,7 @@ import pytest
 pytest.importorskip("homeassistant")
 
 from homeassistant.helpers import entity_registry as er  # noqa: E402
+
 from onemeter import sensor  # noqa: E402
 from onemeter.coordinator import OneMeterData  # noqa: E402
 from onemeter.obis_map import KNOWN_OBIS  # noqa: E402

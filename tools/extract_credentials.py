@@ -248,7 +248,7 @@ def _drain_until_prompt(sock: socket.socket) -> bytes:
             )
         try:
             chunk = sock.recv(4096)
-        except socket.timeout as exc:
+        except TimeoutError as exc:
             raise OpenOCDError("socket timeout reading openocd output") from exc
         if not chunk:
             raise OpenOCDError("openocd connection closed unexpectedly")
@@ -486,7 +486,7 @@ def main() -> int:
         # "success, but warnings printed".
         print(f"ERROR: cannot connect to OpenOCD: {exc}", file=sys.stderr)
         return 2
-    except (ConnectionError, socket.error) as exc:
+    except OSError as exc:
         print(f"ERROR: cannot connect to OpenOCD: {exc}", file=sys.stderr)
         print("Is `openocd` running and listening on the telnet port?", file=sys.stderr)
         return 2
