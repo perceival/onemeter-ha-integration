@@ -20,8 +20,7 @@
   "issue_tracker": "https://github.com/perceival/onemeter-ha-integration/issues",
   "requirements": [
     "bleak>=0.22.0",
-    "bleak-retry-connector>=3.5.0",
-    "cryptography>=42.0.0"
+    "bleak-retry-connector>=3.5.0"
   ],
   "version": "0.0.1"
 }
