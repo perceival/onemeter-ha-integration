@@ -44,6 +44,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "custom_components"))
 
 from bleak import BleakClient, BleakScanner  # noqa: E402
+
 from onemeter.const import EPSI_RX_CHAR, EPSI_TX_CHAR, EPSI_UUID_CHAR  # noqa: E402
 from onemeter.protocol.session import OneMeterSession  # noqa: E402
 

@@ -35,7 +35,6 @@ from .decode import (
     DeviceTime,
     FSParams,
     Identity,
-    ObisEntry,
     parse_auto_detect,
     parse_battery,
     parse_block_header,

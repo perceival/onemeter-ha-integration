@@ -20,7 +20,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 from bleak import BleakClient
@@ -31,6 +31,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
+from . import policy
 from .const import (
     ADVERT_NOTIFY_MIN_INTERVAL_S,
     AUTH_FAIL_THRESHOLD,
@@ -65,7 +66,6 @@ from .const import (
     RX_DEDUP_WINDOW_S,
     WRITE_TIMEOUT_S,
 )
-from . import policy
 from .protocol import advert
 from .protocol import commands as proto_cmds
 from .protocol.decode import (
@@ -81,8 +81,8 @@ from .protocol.decode import (
 from .protocol.session import (
     BatteryReading,
     CommStats,
-    FSParams,
     FrameErrorEvent,
+    FSParams,
     OneMeterSession,
     RejectionEvent,
     UnknownResponse,
@@ -146,12 +146,12 @@ class OneMeterData:
     # Per-dataType register store, populated by cmd 0x20 records (live
     # mode). Key = dataType int, value = a small dict with the latest
     # raw value + sentinel + last_seen_at.
-    meter_registers: dict[int, "MeterRegister"] = field(default_factory=dict)
+    meter_registers: dict[int, MeterRegister] = field(default_factory=dict)
     last_obis_entries: list = field(default_factory=list)
     # Indexed view of the same entries, keyed by the 4-byte OBIS code so
     # sensor entities can do O(1) lookup of "their" value. Updated on
     # every cmd 0x21 response.
-    cached_obis_by_code: dict[bytes, "ObisEntry"] = field(default_factory=dict)
+    cached_obis_by_code: dict[bytes, ObisEntry] = field(default_factory=dict)
     last_seen: datetime | None = None
     rx_frames: int = 0
     rx_errors: int = 0
@@ -458,7 +458,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
         # let the entity say so (the value itself is still worth showing — it is
         # the only signal available without a key).
         self.data.advert_clock_authenticated = bool(adv.records)
-        self.data.advert_last_seen = datetime.now(timezone.utc)
+        self.data.advert_last_seen = datetime.now(UTC)
         if adv.records:
             self.data.advert_records = {rec.tag: rec.value for rec in adv.records}
             self.data.advert_data_last_seen = self.data.advert_last_seen
@@ -677,7 +677,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=RECONNECT_COOLDOWN_S)
                 return  # stop signalled
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
             # Phase 2: interruptible remainder (success path only — on
@@ -743,7 +743,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
                 await self._write_and_wait_ack(
                     client, frame, timeout=LOGIN_TIMEOUT_S / len(login_frames), label=labels[i]
                 )
-        except _AuthRejected:
+        except _AuthRejected as err:
             self._consecutive_auth_fails += 1
             self._last_failure_was_rejection = True
             if (
@@ -758,7 +758,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
                 # of cause, and credentials don't change spontaneously.
                 self._fire_stuck_notification()
                 self._stuck_notification_fired = True
-            raise BleakError("login rejected; will retry")
+            raise BleakError("login rejected; will retry") from err
         else:
             self._consecutive_auth_fails = 0
             self._last_failure_was_rejection = False
@@ -797,7 +797,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
                 )
                 self.async_set_updated_data(self.data)
                 await asyncio.sleep(INTER_LOGIN_FRAME_S)
-            except (asyncio.TimeoutError, _AuthRejected, ValueError) as exc:
+            except (TimeoutError, _AuthRejected, ValueError) as exc:
                 _LOGGER.warning(
                     "OneMeter %s: failed to set protocol: %s — will retry next session",
                     self.address, exc,
@@ -815,7 +815,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
                     label=f"probe(0x{cmd:02X})",
                 )
                 await asyncio.sleep(INTER_LOGIN_FRAME_S)
-            except (asyncio.TimeoutError, _AuthRejected) as exc:
+            except (TimeoutError, _AuthRejected) as exc:
                 _LOGGER.debug("OneMeter %s: probe 0x%02X failed: %s", self.address, cmd, exc)
 
         # If an auto-detect was requested, send cmd 0x19 once and record
@@ -830,7 +830,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
                     timeout=WRITE_TIMEOUT_S,
                     label="auto_detect(0x19)",
                 )
-            except (asyncio.TimeoutError, _AuthRejected) as exc:
+            except (TimeoutError, _AuthRejected) as exc:
                 _LOGGER.warning(
                     "OneMeter %s: auto-detect failed: %s", self.address, exc,
                 )
@@ -871,7 +871,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
                 timeout=WRITE_TIMEOUT_S,
                 label="polite_close(0x23)",
             )
-        except (asyncio.TimeoutError, _AuthRejected) as exc:
+        except (TimeoutError, _AuthRejected) as exc:
             _LOGGER.debug("OneMeter %s: polite-close failed: %s", self.address, exc)
 
     async def _write_and_wait_ack(self, client: BleakClient, frame: bytes, *, timeout: float, label: str = "") -> None:
@@ -888,11 +888,11 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
                 client.write_gatt_char(EPSI_TX_CHAR, frame, response=True),
                 timeout=WRITE_TIMEOUT_S,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise
         try:
             await asyncio.wait_for(self._pending_ack.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise
         if self._last_ack_cmd == 0xFF:
             raise _AuthRejected()
@@ -931,7 +931,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
 
     def _handle_event(self, event) -> None:
         """Update self.data based on a fully-decoded RX event."""
-        self.data.last_seen = datetime.now(timezone.utc)
+        self.data.last_seen = datetime.now(UTC)
         if isinstance(event, BatteryReading):
             self.data.battery_volts = event.volts
             self._last_ack_cmd = 0x18
@@ -1065,7 +1065,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
             data_type=dt,
             value_u32=rec.value_u32 if rec.has_value else None,
             block_timestamp=block.timestamp,
-            last_seen_at=datetime.now(timezone.utc),
+            last_seen_at=datetime.now(UTC),
             has_value=rec.has_value,
         )
         if new_register and self._add_register_entity_cb is not None:
@@ -1146,7 +1146,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
         t0 = time.monotonic()
         try:
             await asyncio.wait_for(client.disconnect(), timeout=5.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _LOGGER.warning(
                 "OneMeter %s: BLE disconnect call timed out after %.1fs",
                 self.address, time.monotonic() - t0,
@@ -1161,7 +1161,7 @@ class OneMeterCoordinator(DataUpdateCoordinator[OneMeterData]):
 
         try:
             await asyncio.wait_for(self._disconnected_event.wait(), timeout=3.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _LOGGER.warning(
                 "OneMeter %s: disconnect callback didn't fire within 3.0s "
                 "(call returned in %.2fs). The proxy may be holding a phantom "

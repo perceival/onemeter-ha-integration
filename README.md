@@ -35,7 +35,7 @@ The original author's backstory:
 ## Status
 
 Beta. In daily use on a device reading a real residential meter, and
-tested on several more units on the bench. The test suite has 187 unit
+tested on several more units on the bench. The test suite has 246 unit
 tests, and the Home Assistant side has been exercised end-to-end against
 live devices. Per-meter behaviour will vary — see the "Discovering your
 meter's registers" section below.

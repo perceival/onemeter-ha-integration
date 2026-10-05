@@ -3,6 +3,7 @@ import json
 import pathlib
 
 import pytest
+
 from onemeter.protocol import decode
 
 

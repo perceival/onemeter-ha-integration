@@ -14,7 +14,7 @@ scale applied.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
@@ -183,7 +183,7 @@ def to_utc_datetime(raw: int) -> datetime | None:
     state update.
     """
     try:
-        return datetime.fromtimestamp(raw, tz=timezone.utc)
+        return datetime.fromtimestamp(raw, tz=UTC)
     except (OSError, ValueError, OverflowError):
         return None
 

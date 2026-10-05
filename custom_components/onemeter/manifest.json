@@ -1,19 +1,27 @@
 {
   "domain": "onemeter",
   "name": "OneMeter",
-  "version": "0.0.1",
-  "documentation": "https://github.com/perceival/onemeter-ha-integration",
-  "issue_tracker": "https://github.com/perceival/onemeter-ha-integration/issues",
-  "codeowners": ["@perceival"],
-  "config_flow": true,
-  "iot_class": "local_polling",
-  "integration_type": "device",
-  "dependencies": ["bluetooth"],
-  "requirements": ["bleak>=0.22.0", "bleak-retry-connector>=3.5.0", "cryptography>=42.0.0"],
   "bluetooth": [
     {
       "local_name": "OM *",
       "manufacturer_id": 65535
     }
-  ]
+  ],
+  "codeowners": [
+    "@perceival"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "bluetooth"
+  ],
+  "documentation": "https://github.com/perceival/onemeter-ha-integration",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/perceival/onemeter-ha-integration/issues",
+  "requirements": [
+    "bleak>=0.22.0",
+    "bleak-retry-connector>=3.5.0",
+    "cryptography>=42.0.0"
+  ],
+  "version": "0.0.1"
 }
