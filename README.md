@@ -143,6 +143,12 @@ correlation.
 
 ### Via HACS
 
+[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=perceival&repository=onemeter-ha-integration&category=integration)
+
+The button above adds the repository to HACS as a custom repository
+(you need [My Home Assistant](https://my.home-assistant.io/) set up
+with your instance's URL). Or do it by hand:
+
 1. Add this repository as a custom integration in HACS:
    *HACS → Integrations → ⋮ → Custom repositories → URL:* this repo's
    URL, *Category:* Integration.
