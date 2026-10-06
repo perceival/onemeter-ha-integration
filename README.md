@@ -1,5 +1,7 @@
 # OneMeter — Home Assistant integration (unofficial)
 
+[![Support me on Ko-fi](https://img.shields.io/badge/SUPPORT%20ME%20ON%20KO--FI-FFDD00?style=for-the-badge&logo=ko-fi&logoColor=black)](https://ko-fi.com/perceival)
+
 Home Assistant custom integration for the **OneMeter** BLE energy-meter
 optical reader (the Polish nRF51822-based device). Talks to the stock
 device firmware over BLE through an ESPHome `bluetooth_proxy` (or any
