@@ -1,6 +1,6 @@
 # OneMeter — Home Assistant integration (unofficial)
 
-[![Support me on Ko-fi](https://img.shields.io/badge/SUPPORT%20ME%20ON%20KO--FI-FFDD00?style=for-the-badge&logo=ko-fi&logoColor=black)](https://ko-fi.com/perceival)
+<a href="https://www.buymeacoffee.com/perceival"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="60"></a>
 
 Home Assistant custom integration for the **OneMeter** BLE energy-meter
 optical reader (the Polish nRF51822-based device). Talks to the stock
